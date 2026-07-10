@@ -1,0 +1,11 @@
+title,snippet,category,source
+LangGraph Overview,"LangGraph is used to build stateful agent workflows with nodes, edges, transitions, and branching logic.",agent-framework,starter-dataset
+Redis Context Memory,"Redis can persist short-term conversation context, message history, and cache entries for repeated chat prompts.",data-infra,starter-dataset
+Elasticsearch Search Basics,"Elasticsearch supports keyword and full-text search across indexed JSON documents using analyzers and scoring.",search,starter-dataset
+Langfuse Tracing,"Langfuse records traces for prompts, responses, metadata, sessions, and model behavior in LLM applications.",observability,starter-dataset
+Ollama Local Models,"Ollama lets developers run open models locally through an HTTP API, making offline or self-hosted inference easy.",llm-provider,starter-dataset
+Hugging Face Inference API,"The Hugging Face Inference API provides hosted model access over HTTPS for text generation and other tasks.",llm-provider,starter-dataset
+Parallel Agent Pattern,"Parallel agents can run search and summarization at the same time before merging their outputs into one answer.",multi-agent-pattern,starter-dataset
+Supervisor Routing,"A supervisor agent can inspect the user query and choose whether summary, search, or parallel execution is best.",multi-agent-pattern,starter-dataset
+Vector Search Concepts,"Vector search retrieves semantically similar content by comparing embeddings rather than exact keywords only.",search,starter-dataset
+Chat UI Integration,"A frontend chat application usually sends a message payload to the backend and renders route, answer, and tool outputs.",frontend,starter-dataset
