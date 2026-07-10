@@ -1,8 +1,8 @@
-# État de l’art du projet — Multi-Agent Chat System
+# État de l’art du projet — Agentic RAG Platform
 
 ## 1. Objectif du document
 
-Ce document présente l’état de l’art du projet **Multi-Agent Chat System** après son évolution vers une architecture agentique plus proche d’un système **production-grade**.
+Ce document présente l’état de l’art du projet **Agentic RAG Platform** après son évolution vers une architecture agentique plus proche d’un système **production-grade**.
 
 Il décrit :
 - l’architecture actuelle du projet ;
@@ -1039,7 +1039,7 @@ Pour les workflows longs :
 
 ## 17. Conclusion
 
-Le projet **Multi-Agent Chat System** a évolué d’un starter pédagogique vers une architecture agentique nettement plus robuste.
+Le projet **Agentic RAG Platform** a évolué d’un starter pédagogique vers une architecture agentique nettement plus robuste.
 
 Il dispose maintenant de :
 - FastAPI ;

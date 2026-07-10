@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Multi Agent Starter UI",
-  description: "Beginner-friendly multi-agent chat UI",
+  title: "Agentic RAG Platform",
+  description: "Agentic RAG chat UI with multi-agent workflow visibility",
 };
 
 export default function RootLayout({
@@ -16,5 +16,4 @@ export default function RootLayout({
     </html>
   );
 }
-
 

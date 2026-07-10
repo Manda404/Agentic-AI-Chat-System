@@ -1,8 +1,8 @@
 <div align="center">
 
-# Agentic AI Chat System
+# Agentic RAG Platform
 
-**Un système de chat IA multi-agent, RAG et observable, construit avec FastAPI, LangGraph, Redis, Elasticsearch et Next.js.**
+**Une plateforme RAG agentique, multi-agent et observable, construite avec FastAPI, LangGraph, Redis, Elasticsearch et Next.js.**
 
 <img src="gitimg/1.png" alt="Chat Interface" width="600"/>
 

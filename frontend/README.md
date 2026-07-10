@@ -1,6 +1,6 @@
-# Multi Agent Starter Frontend
+# Agentic RAG Platform Frontend
 
-Beginner-friendly Next.js chat UI for the multi-agent backend.
+Next.js chat UI for the Agentic RAG Platform backend.
 
 ## Features
 

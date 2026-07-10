@@ -41,7 +41,7 @@ from app.routers.chat_router import router as chat_router
 app = FastAPI(
     title=settings.app_name,
     version="0.0.1",
-    description="Starter multi-agent backend with auth, Redis memory, Elasticsearch search, and router-based modular structure."
+    description="Agentic RAG Platform backend with auth, Redis memory, Elasticsearch search, LangGraph orchestration, and RAG-oriented agents."
 )
 
 app.add_middleware(SecurityHeadersMiddleware)

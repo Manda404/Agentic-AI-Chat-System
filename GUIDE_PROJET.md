@@ -1,6 +1,6 @@
-# Guide de compréhension du projet — Multi-Agent Chat System
+# Guide de compréhension du projet — Agentic RAG Platform
 
-> Ce guide explique le projet tel qu’il est maintenant : un chat IA multi-agent basé sur FastAPI, LangGraph, Redis, Elasticsearch, HuggingFace Router et Next.js. L’objectif est de comprendre rapidement **quoi fait le projet**, **comment il fonctionne**, **où modifier quoi**, et **quels points restent à surveiller**.
+> Ce guide explique le projet tel qu’il est maintenant : une plateforme RAG agentique basée sur FastAPI, LangGraph, Redis, Elasticsearch, HuggingFace Router et Next.js. L’objectif est de comprendre rapidement **quoi fait le projet**, **comment il fonctionne**, **où modifier quoi**, et **quels points restent à surveiller**.
 
 ---
 

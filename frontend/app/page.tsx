@@ -87,8 +87,8 @@ type ViewMode = "desktop" | "tablet" | "mobile";
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
 
-const TOKEN_STORAGE_KEY = "multi-agent-starter-token";
-const EMAIL_STORAGE_KEY = "multi-agent-starter-email";
+const TOKEN_STORAGE_KEY = "agentic-rag-platform-token";
+const EMAIL_STORAGE_KEY = "agentic-rag-platform-email";
 
 const quickPrompts = [
   "How does LangGraph work?",
@@ -105,7 +105,7 @@ export default function Home() {
     {
       role: "assistant",
       content:
-        "✓ Ready. Test summary, search & multi-agent flows.",
+        "Ready. Test RAG, search and multi-agent flows.",
     },
   ]);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
