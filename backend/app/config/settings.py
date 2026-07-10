@@ -18,7 +18,7 @@ load_dotenv()
 
 class Settings(BaseModel):
     """Toutes les variables de configuration du backend, avec leurs valeurs par défaut."""
-    app_name: str = os.getenv("APP_NAME", "Multi Agent Starter Backend")
+    app_name: str = os.getenv("APP_NAME", "Agentic RAG Platform Backend")
     app_env: str = os.getenv("APP_ENV", "development")
     api_prefix: str = os.getenv("API_PREFIX", "/api/v1")
     backend_cors_origins: List[str] = [
