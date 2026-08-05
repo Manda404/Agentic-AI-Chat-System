@@ -35,7 +35,6 @@ Utilisateur
   -> Frontend Next.js
   -> Backend FastAPI
   -> MemoryAgent
-  -> SupervisorAgent
   -> LLMPlannerAgent
   -> ToolRouterAgent
   -> Search / RAG / Direct Answer
@@ -47,10 +46,10 @@ Utilisateur
 
 La méthode est la suivante :
 
-1. **Comprendre la demande** : le superviseur et le planner identifient l’intention.
+1. **Comprendre la demande** : le planner LLM identifie l’intention (avec fallback déterministe si le LLM échoue).
 2. **Choisir les bons outils** : le tool router décide si la réponse doit être directe, documentaire ou RAG.
 3. **Chercher les sources** : Elasticsearch récupère les documents pertinents.
-4. **Améliorer le contexte** : retrieval hybride préparé, reranking heuristique et compression de contexte.
+4. **Améliorer le contexte** : retrieval hybride préparé, reranking lexical + sémantique (embeddings HuggingFace) et compression de contexte.
 5. **Générer une réponse** : le RAGAgent répond à partir des documents disponibles.
 6. **Contrôler la réponse** : le critic vérifie qualité, clarté et grounding.
 7. **Sécuriser la sortie** : le safety guard masque les secrets évidents.
@@ -73,7 +72,6 @@ La méthode est la suivante :
 
 **Agents Principaux**
 - `MemoryAgent`
-- `SupervisorAgent`
 - `LLMPlannerAgent`
 - `ToolRouterAgent`
 - `SearchAgent`
@@ -132,6 +130,7 @@ Pour aller plus loin :
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agents](docs/AGENTS.md)
 - [RAG](docs/RAG.md)
+- [RAG — détail du pipeline et limites connues](backend/app/agents/RAG_SYSTEM.md)
 - [Evaluation](docs/EVALUATION.md)
 - [Production Readiness](docs/PRODUCTION_READINESS.md)
 - [État de l’art](ETAT_DE_L_ART.md)

@@ -72,10 +72,15 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 - À quoi ça sert ici : suivre les prompts, les réponses, la latence et les performances des appels au modèle.
 - Pourquoi c’est utile : pour mieux comprendre et debuguer les interactions avec le LLM.
 
-### 2.14 LangChain / LangGraph
-- Rôle principal : bibliothèques pour construire des pipelines d’IA et des workflows agentiques.
-- À quoi ça sert ici : elles sont présentes dans les dépendances, mais l’implémentation actuelle du projet n’utilise pas encore un vrai graphe LangGraph.
-- Ce qu’il faut retenir : le projet est “inspiré” de l’écosystème agentique moderne, mais l’orchestration réelle est faite à la main.
+### 2.14 LangGraph
+- Rôle principal : bibliothèque d’orchestration de workflows agentiques sous forme de graphe d’états.
+- À quoi ça sert ici : `backend/app/workflows/chat_workflow.py` construit un vrai `StateGraph` — chaque agent (mémoire, planner, recherche, retrieval hybride, reranking, compression, RAG, critic, safety, réponse finale) est un nœud du graphe, avec des transitions conditionnelles (routage, boucle de correction bornée).
+- Ce qu’il faut retenir : l’orchestration n’est pas faite à la main — LangGraph exécute réellement le graphe compilé, avec état partagé (`GraphState`) et checkpointing optionnel.
+
+### 2.15 Embeddings HuggingFace
+- Rôle principal : vecteurs numériques représentant le sens d’un texte.
+- À quoi ça sert ici : le `RerankerAgent` calcule un embedding de la question et de chaque document candidat (via le même client HuggingFace Router que le LLM) pour un score de similarité sémantique, en complément du score lexical.
+- Pourquoi c’est utile : le classement des documents ne dépend plus uniquement du recouvrement de mots-clés.
 
 ---
 
@@ -123,27 +128,39 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 ## 5. Composants fonctionnels du projet
 
 ### 5.1 Les agents
-- Supervisor Agent : décide de la route à suivre pour une requête.
-- Search Agent : récupère des documents pertinents dans Elasticsearch.
-- Summary Agent : produit une réponse directe basée sur le contexte et le LLM.
+Le workflow LangGraph enchaîne 12 agents spécialisés (rôle détaillé dans
+[GUIDE_PROJET.md](GUIDE_PROJET.md#9-les-agents-rôle-par-rôle)) :
+- `MemoryAgent` : charge le contexte de conversation.
+- `LLMPlannerAgent` : décide de l’intention et du plan (avec fallback déterministe par mots-clés — il n’y a plus d’agent superviseur séparé, cette étape a été fusionnée dans le planner).
+- `ToolRouterAgent` : convertit le plan en route concrète pour le graphe.
+- `SearchAgent` : récupère des documents pertinents dans Elasticsearch.
+- `HybridRetrieverAgent` : fusionne/déduplique les résultats (prêt pour une future recherche vectorielle).
+- `RerankerAgent` : réordonne les documents (score lexical + score sémantique via embeddings).
+- `ContextCompressionAgent` : réduit le contexte avant envoi au LLM.
+- `SummaryAgent` : produit une réponse directe (hors RAG).
+- `RAGAgent` : génère une réponse ancrée dans les documents.
+- `LLMCriticAgent` : évalue la qualité de la réponse.
+- `SafetyGuardAgent` : masque les secrets évidents avant finalisation.
+- `FinalAnswerAgent` : assemble la réponse finale.
 
 ### 5.2 Le workflow de chat
-- Rôle principal : orchestrer l’exécution des agents selon la demande utilisateur.
+- Rôle principal : orchestrer l’exécution des agents selon la demande utilisateur, via un `StateGraph` LangGraph compilé une seule fois.
 - À quoi ça sert ici : transformer une question simple en une réponse cohérente, parfois en combinant recherche et génération.
 
 ### 5.3 Le moteur RAG
 - Rôle principal : combiner recherche documentaire et génération par LLM.
-- À quoi ça sert ici : répondre aux questions avec un contexte récupéré dans les documents ingérés, au lieu de répondre de manière purement “générative”.
+- À quoi ça sert ici : répondre aux questions avec un contexte récupéré dans les documents ingérés, au lieu de répondre de manière purement “générative”. Détail complet du pipeline et des limites connues : [backend/app/agents/RAG_SYSTEM.md](backend/app/agents/RAG_SYSTEM.md).
 
 ---
 
 ## 6. Résumé simple : à quoi sert chaque famille de technologie
 
 - FastAPI / Uvicorn : exposer l’API backend.
+- LangGraph : orchestrer le workflow multi-agent en graphe d’états.
 - Pydantic : valider les données.
 - Redis : mémoire, cache et historique.
 - Elasticsearch : recherche documentaire et indexation.
-- HuggingFace Router / OpenAI client : appels au modèle LLM.
+- HuggingFace Router / OpenAI client : appels au modèle LLM et aux embeddings.
 - Loguru / Langfuse : logs et observabilité.
 - Next.js / React / TypeScript : interface utilisateur.
 - Podman Compose : infrastructure locale.

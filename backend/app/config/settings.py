@@ -38,10 +38,12 @@ class Settings(BaseModel):
     huggingface_api_key: str = os.getenv("HUGGINGFACE_API_KEY", "")
     huggingface_model: str = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
     
-    model_summarization: str = os.getenv("MODEL_SUMMARIZATION", "") 
+    model_summarization: str = os.getenv("MODEL_SUMMARIZATION", "")
     model_code_generation: str = os.getenv("MODEL_CODE_GENERATION", "")
     model_question_answering: str = os.getenv("MODEL_QUESTION_ANSWERING", "")
     model_reasoning: str = os.getenv("MODEL_REASONING", "")
+    embedding_model: str = os.getenv("MODEL_EMBEDDING", "BAAI/bge-small-en-v1.5")
+    semantic_reranker_enabled: bool = os.getenv("SEMANTIC_RERANKER_ENABLED", "true").lower() == "true"
     
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_ttl_seconds: int = int(os.getenv("REDIS_TTL_SECONDS", "3600"))

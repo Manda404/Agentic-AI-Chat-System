@@ -17,7 +17,6 @@ from app.agents.reranker_agent import RerankerAgent
 from app.agents.safety_guard_agent import SafetyGuardAgent
 from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
-from app.agents.supervisor_agent import SupervisorAgent
 from app.agents.tool_router_agent import ToolRouterAgent
 from app.memory.redis_memory import RedisMemoryService
 from app.models.chat_models import ChatRequest, CriticReview, PlannerDecision, SafetyReview, SearchResult
@@ -42,7 +41,7 @@ class FakeSearchService:
 
 
 class FakeLLMService:
-    async def plan(self, user_message: str, conversation_history: str = "", route_hint: str = ""):
+    async def plan(self, user_message: str, conversation_history: str = ""):
         if user_message.lower().strip() in {"hello", "hi", "bonjour"}:
             return PlannerDecision(
                 intent="greeting",
@@ -93,7 +92,6 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         workflow.memory_service = RedisMemoryService("redis://localhost:0/0", 60)
         workflow.cache_service = RedisMemoryService("redis://localhost:0/1", 60)
         workflow.memory_agent = MemoryAgent(workflow.memory_service)
-        workflow.supervisor = SupervisorAgent(use_llm_routing=False)
         workflow.planner_agent = LLMPlannerAgent(workflow.llm_service)
         workflow.tool_router_agent = ToolRouterAgent()
         workflow.summary_agent = SummaryAgent(workflow.llm_service)

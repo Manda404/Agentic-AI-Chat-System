@@ -115,7 +115,7 @@ Instructions:
 Final Answer:"""
 
     @staticmethod
-    def planner(user_message: str, conversation_history: str = "", route_hint: str = "") -> str:
+    def planner(user_message: str, conversation_history: str = "") -> str:
         return f"""You are a production-grade planner for a LangGraph multi-agent chat system.
 
 Return ONLY valid JSON matching this schema:
@@ -135,9 +135,6 @@ User message:
 
 Conversation history:
 {conversation_history}
-
-Route hint:
-{route_hint}
 
 Planning rules:
 - Use "greeting" for simple greetings.
@@ -235,7 +232,6 @@ Compressed context:"""
             "question_answering": "Answer questions based on provided context",
             "reasoning": "Solve complex problems with step-by-step reasoning",
             "chat_summary": "Generate conversational responses with history awareness",
-            "routing_decision": "Determine which agent(s) should handle a user request",
         }
         
     @staticmethod
@@ -256,31 +252,3 @@ Compressed context:"""
             'Translate Hello to French'
         """
         return template.format(**kwargs)
-    
-        
-    @staticmethod
-    def routing_decision(user_message: str) -> str:
-        """
-        Prompt template for LLM-based routing decisions
-        
-        Args:
-            user_message: The user's message to analyze for routing
-            
-        Returns:
-            Formatted prompt string for routing decision
-        """
-        return f"""Analyze this user message and determine the best routing:
-
-Message: "{user_message}"
-
-Routing Options:
-- greeting: Simple greetings like "hello", "hi", "hey"
-- search: ONLY when user explicitly wants to see raw documents (e.g., "show me documents", "list documents")
-- summary: Summarization or general direct-answer requests that do not need indexed documents
-- rag: Questions that need answers from indexed documents (e.g., "What is X?", "How much?", "Tell me about Y")
-- planning: Requests for a plan, roadmap, or multi-step execution strategy
-- correction: Requests to review, correct, validate, or improve an answer
-
-IMPORTANT: Questions asking for information from the knowledge base should use "rag".
-
-Answer with ONE word only (greeting/search/summary/rag/planning/correction):"""

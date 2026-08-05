@@ -6,10 +6,13 @@ from app.models.chat_models import SearchResult
 
 
 class EmbeddingService(Protocol):
-    """Interface minimale pour brancher un futur fournisseur d'embeddings."""
+    """Interface minimale pour brancher un fournisseur d'embeddings."""
 
     async def embed_query(self, text: str) -> list[float]:
         """Retourne un vecteur pour une requête utilisateur."""
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Retourne un vecteur par texte, en un seul appel batch."""
 
 
 class VectorStorePort(Protocol):

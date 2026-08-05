@@ -22,8 +22,7 @@ L’idée générale :
 ```text
 Message utilisateur
   -> mémoire
-  -> supervision
-  -> planification LLM
+  -> planification LLM (avec fallback déterministe)
   -> choix des outils
   -> recherche / RAG / réponse directe
   -> critique
@@ -81,7 +80,6 @@ Le graphe logique du chat :
 
 ```text
 MemoryAgent
-  -> SupervisorAgent
   -> LLMPlannerAgent
   -> ToolRouterAgent
   -> Greeting / SummaryAgent / SearchAgent
@@ -170,13 +168,16 @@ MAX_USER_MESSAGE_CHARS=8000
 MAX_RAG_CONTEXT_CHARS=4000
 MAX_RAG_DOCUMENTS=5
 LLM_TIMEOUT_SECONDS=60
+MODEL_EMBEDDING=BAAI/bge-small-en-v1.5
+SEMANTIC_RERANKER_ENABLED=true
 ```
 
 À retenir :
 - `AUTH_SECRET_KEY` doit être fort hors développement ;
 - le backend limite la taille des messages ;
 - le contexte RAG et le nombre de documents envoyés au LLM sont bornés ;
-- le checkpoint LangGraph est optionnel.
+- le checkpoint LangGraph est optionnel ;
+- le reranker sémantique peut être désactivé via `SEMANTIC_RERANKER_ENABLED=false` si besoin de limiter coût/latence.
 
 ### 6.3 Modèles Pydantic
 
@@ -243,7 +244,6 @@ Le graphe contient ces nœuds :
 
 ```text
 memory
-supervisor
 planner
 tool_router
 greeting
@@ -336,19 +336,7 @@ Charge le contexte de conversation :
 - historique envoyé par le frontend ;
 - sinon historique Redis.
 
-### 9.2 SupervisorAgent
-
-Produit une première route rapide :
-- `greeting`
-- `search`
-- `summary`
-- `rag`
-- `planning`
-- `correction`
-
-Il peut utiliser le LLM ou un fallback par mots-clés.
-
-### 9.3 LLMPlannerAgent
+### 9.2 LLMPlannerAgent
 
 Produit un `PlannerDecision` validé par Pydantic :
 - intention ;
@@ -360,9 +348,14 @@ Produit un `PlannerDecision` validé par Pydantic :
 - outils ;
 - raison.
 
-Si le LLM échoue ou renvoie un JSON invalide, l’agent produit un plan déterministe de secours.
+Si le LLM échoue ou renvoie un JSON invalide, l’agent produit un plan
+déterministe de secours basé sur des mots-clés (greeting, summary, planning,
+correction, sinon document_qa). C’est aussi le seul point de classification
+d’intention du workflow : il n’y a plus d’agent superviseur séparé en amont —
+il a été retiré car son résultat n’était de toute façon qu’un indice
+textuel, toujours écrasé par `ToolRouterAgent` une fois le plan produit.
 
-### 9.4 ToolRouterAgent
+### 9.3 ToolRouterAgent
 
 Convertit le plan en route LangGraph sûre :
 - `greeting`
@@ -371,7 +364,7 @@ Convertit le plan en route LangGraph sûre :
 - `rag`
 - `fallback`
 
-### 9.5 SearchAgent
+### 9.4 SearchAgent
 
 Interroge Elasticsearch et retourne des documents avec :
 - titre ;
@@ -380,7 +373,7 @@ Interroge Elasticsearch et retourne des documents avec :
 - score ;
 - snippet.
 
-### 9.6 HybridRetrieverAgent
+### 9.5 HybridRetrieverAgent
 
 Fusionne :
 - les résultats full-text Elasticsearch ;
@@ -393,11 +386,14 @@ Le port vectoriel est préparé avec :
 
 Par défaut, aucune dépendance vectorielle lourde n’est imposée.
 
-### 9.7 RerankerAgent
+### 9.6 RerankerAgent
 
-Réordonne les documents avec une heuristique :
-- score Elasticsearch ;
-- recouvrement lexical avec la question ;
+Réordonne les documents en combinant deux scores :
+- score lexical : score Elasticsearch + recouvrement de mots avec la question ;
+- score sémantique (optionnel, `SEMANTIC_RERANKER_ENABLED`) : similarité
+  cosinus entre l’embedding de la question et celui de chaque document,
+  calculés via le HuggingFace Router (`MODEL_EMBEDDING`). Retombe
+  silencieusement sur le score lexical seul si l’appel embeddings échoue.
 - limite `MAX_RAG_DOCUMENTS`.
 
 Produit :
@@ -405,15 +401,18 @@ Produit :
 - `reranked_count`
 - `top_score`
 - `sources_used`
+- `semantic_reranking_used`
 
-### 9.8 ContextCompressionAgent
+Détail complet et limites connues : [backend/app/agents/RAG_SYSTEM.md](backend/app/agents/RAG_SYSTEM.md).
+
+### 9.7 ContextCompressionAgent
 
 Réduit le contexte envoyé au LLM :
 - snippets plus courts ;
 - labels source conservés ;
 - limite `MAX_RAG_CONTEXT_CHARS`.
 
-### 9.9 SummaryAgent
+### 9.8 SummaryAgent
 
 Produit une réponse directe via le LLM.
 
@@ -424,7 +423,7 @@ Utilisé pour :
 - demandes de correction ;
 - fallback.
 
-### 9.10 RAGAgent
+### 9.9 RAGAgent
 
 Génère une réponse ancrée dans les documents :
 - utilise `reranked_results` si disponibles ;
@@ -432,7 +431,7 @@ Génère une réponse ancrée dans les documents :
 - cite les sources ;
 - dit clairement quand aucun document pertinent n’est trouvé.
 
-### 9.11 LLMCriticAgent
+### 9.10 LLMCriticAgent
 
 Évalue la réponse provisoire :
 - pertinence ;
@@ -443,7 +442,7 @@ Génère une réponse ancrée dans les documents :
 
 Si le LLM critic échoue, il utilise le critic déterministe existant.
 
-### 9.12 SafetyGuardAgent
+### 9.11 SafetyGuardAgent
 
 Vérifie la réponse avant finalisation :
 - détecte clés API ;
@@ -452,7 +451,7 @@ Vérifie la réponse avant finalisation :
 - clés privées ;
 - masque les secrets évidents.
 
-### 9.13 FinalAnswerAgent
+### 9.12 FinalAnswerAgent
 
 Construit la réponse finale :
 - prend la meilleure sortie disponible ;
@@ -482,7 +481,7 @@ Ce qui existe :
 - ingestion CSV/PDF ;
 - recherche full-text ;
 - interface pour future recherche vectorielle ;
-- reranking heuristique ;
+- reranking lexical + sémantique (embeddings HuggingFace) ;
 - compression de contexte ;
 - génération sourcée ;
 - critic ;
@@ -490,9 +489,8 @@ Ce qui existe :
 - métriques de retrieval.
 
 Ce qui reste à brancher pour aller plus loin :
-- embeddings réels ;
-- index vectoriel ;
-- reranker cross-encoder ;
+- index vectoriel pour le retrieval (les embeddings existent déjà côté reranking, mais pas pour la recherche elle-même) ;
+- reranker cross-encoder dédié ;
 - citations phrase par phrase ;
 - évaluation continue de la factualité.
 
@@ -686,19 +684,18 @@ Déroulé probable :
 1. Frontend envoie POST /api/v1/chat.
 2. ChatWorkflow vérifie le cache.
 3. MemoryAgent charge le contexte.
-4. SupervisorAgent propose une route documentaire.
-5. LLMPlannerAgent produit un plan document_qa.
-6. ToolRouterAgent choisit rag.
-7. SearchAgent interroge Elasticsearch.
-8. HybridRetrieverAgent normalise/fusionne les résultats.
-9. RerankerAgent classe les documents.
-10. ContextCompressionAgent réduit le contexte.
-11. RAGAgent génère une réponse sourcée.
-12. LLMCriticAgent vérifie la réponse.
-13. SafetyGuardAgent vérifie la sortie.
-14. FinalAnswerAgent produit la réponse finale.
-15. Redis stocke historique et cache.
-16. Frontend affiche réponse + debug cockpit.
+4. LLMPlannerAgent produit un plan document_qa.
+5. ToolRouterAgent choisit rag.
+6. SearchAgent interroge Elasticsearch.
+7. HybridRetrieverAgent normalise/fusionne les résultats.
+8. RerankerAgent classe les documents (score lexical + sémantique).
+9. ContextCompressionAgent réduit le contexte.
+10. RAGAgent génère une réponse sourcée.
+11. LLMCriticAgent vérifie la réponse.
+12. SafetyGuardAgent vérifie la sortie.
+13. FinalAnswerAgent produit la réponse finale.
+14. Redis stocke historique et cache.
+15. Frontend affiche réponse + debug cockpit.
 ```
 
 La réponse frontend inclut typiquement :
@@ -721,7 +718,7 @@ La réponse frontend inclut typiquement :
 | Changer le graphe LangGraph | `backend/app/workflows/chat_workflow.py` |
 | Ajouter un agent | `backend/app/agents/` puis brancher dans `chat_workflow.py` |
 | Changer le prompt du planner/critic/RAG | `backend/app/prompts/llm_prompts.py` |
-| Modifier le routing initial | `backend/app/agents/supervisor_agent.py` |
+| Modifier le routing initial et le fallback par mots-clés | `backend/app/agents/llm_planner_agent.py` |
 | Modifier le plan structuré | `backend/app/agents/llm_planner_agent.py` |
 | Modifier le tool routing | `backend/app/agents/tool_router_agent.py` |
 | Modifier le RAG | `rag_agent.py`, `reranker_agent.py`, `context_compression_agent.py` |
@@ -740,8 +737,8 @@ La réponse frontend inclut typiquement :
 
 - `AUTH_SECRET_KEY` doit être changé hors dev.
 - `llm_provider="ollama"` existe dans la config, mais le service LLM réellement branché est HuggingFace Router.
-- Le vector store est préparé mais pas branché.
-- Le reranking est heuristique, pas cross-encoder.
+- Le vector store est préparé mais pas branché (le reranking sémantique n’en dépend pas : il calcule ses embeddings à la volée, sans index vectoriel).
+- Le reranking combine un score lexical et un score sémantique (embeddings HuggingFace), mais ce n’est pas encore un cross-encoder dédié.
 - Le checkpoint est mémoire, pas persistant.
 - Le rate limiting est en mémoire locale.
 - Le cache est exact-match sur le message normalisé, pas sémantique.

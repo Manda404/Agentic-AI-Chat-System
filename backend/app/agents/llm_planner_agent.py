@@ -4,7 +4,11 @@ Agent de planification LLM du système multi-agent.
 Dans ce projet, le planner est le point qui transforme une intention utilisateur
 en plan d'exécution lisible par le graphe LangGraph. Il demande d'abord au LLM
 de produire un JSON validé par `PlannerDecision`, puis garde un fallback
-déterministe pour que le chat continue de fonctionner même sans fournisseur LLM.
+déterministe (classification par mots-clés) pour que le chat continue de
+fonctionner même sans fournisseur LLM. Ce planner est le seul point de
+classification d'intention du workflow : il n'y a plus de superviseur en
+amont, son résultat n'était de toute façon jamais utilisé que comme indice
+textuel, écrasé ensuite par `ToolRouterAgent`.
 """
 
 from app.logger import logger
@@ -52,7 +56,6 @@ class LLMPlannerAgent:
             decision = await self.llm_service.plan(
                 user_message=state.user_message,
                 conversation_history=history,
-                route_hint=state.route or "",
             )
             source = "llm"
         except Exception as exc:
@@ -83,18 +86,27 @@ class LLMPlannerAgent:
             metadata={"source": source, "intent": decision.intent, "tools": decision.tools},
         )
 
+    GREETING_KEYWORDS = {
+        "hello", "hi", "hey", "bonjour", "salut", "coucou",
+        "good morning", "good afternoon", "good evening",
+    }
+    SUMMARY_KEYWORDS = ["summary", "summarize", "summarise", "résume", "resume"]
+    PLANNING_KEYWORDS = ["plan", "steps", "roadmap", "strategy", "multi-step", "étapes", "strategie"]
+    CORRECTION_KEYWORDS = ["correct", "validate", "review", "critic", "fix", "corrige", "valide"]
+
     def _fallback_decision(self, state: GraphState) -> PlannerDecision:
         """
         Construit un plan déterministe quand le LLM de planning échoue.
 
         Ce fallback protège le workflow contre les indisponibilités LLM et les
-        réponses JSON invalides. Il reste volontairement simple : salutation,
-        réponse directe, planning/correction ou RAG documentaire.
+        réponses JSON invalides. La classification se fait par mots-clés
+        directement sur le message utilisateur (il n'y a pas de route déjà
+        calculée à ce stade) : salutation, réponse directe, planning/correction
+        ou RAG documentaire par défaut.
         """
-        route = state.route or "rag"
         lowered = state.user_message.lower().strip()
 
-        if route == "greeting":
+        if lowered in self.GREETING_KEYWORDS:
             return PlannerDecision(
                 intent="greeting",
                 requires_retrieval=False,
@@ -103,9 +115,9 @@ class LLMPlannerAgent:
                 requires_safety=True,
                 steps=["load_memory", "greeting", "critic_review", "safety_review", "final_answer"],
                 tools=["memory", "critic", "safety"],
-                reason="Greeting route selected by supervisor.",
+                reason="Greeting detected by fallback keyword match.",
             )
-        if route in {"summary", "simple_llm"} or any(word in lowered for word in ["summary", "summarize", "résume"]):
+        if any(word in lowered for word in self.SUMMARY_KEYWORDS):
             return PlannerDecision(
                 intent="summarization",
                 requires_retrieval=False,
@@ -116,7 +128,7 @@ class LLMPlannerAgent:
                 tools=["memory", "summary", "critic", "safety"],
                 reason="Direct LLM response is sufficient.",
             )
-        if route in {"planning"} or any(word in lowered for word in ["plan", "steps", "roadmap", "étapes"]):
+        if any(word in lowered for word in self.PLANNING_KEYWORDS):
             return PlannerDecision(
                 intent="planning",
                 requires_retrieval=False,
@@ -127,7 +139,7 @@ class LLMPlannerAgent:
                 tools=["memory", "summary", "critic", "safety"],
                 reason="Planning request can be handled directly.",
             )
-        if route in {"correction"} or any(word in lowered for word in ["correct", "review", "corrige", "valide"]):
+        if any(word in lowered for word in self.CORRECTION_KEYWORDS):
             return PlannerDecision(
                 intent="correction",
                 requires_retrieval=False,

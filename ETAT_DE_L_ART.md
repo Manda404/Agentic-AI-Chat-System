@@ -54,8 +54,6 @@ ChatWorkflow LangGraph
     ↓
 MemoryAgent
     ↓
-SupervisorAgent
-    ↓
 LLMPlannerAgent
     ↓
 ToolRouterAgent
@@ -98,8 +96,6 @@ ChatWorkflow
 LangGraph StateGraph
     ↓
 MemoryAgent
-    ↓
-SupervisorAgent
     ↓
 LLMPlannerAgent
     ↓
@@ -212,7 +208,6 @@ Le workflow construit un `StateGraph(GraphStateDict)` avec les nœuds suivants :
 
 ```text
 memory
-supervisor
 planner
 tool_router
 greeting
@@ -341,24 +336,7 @@ Positionnement :
 Limite :
 - pas encore de mémoire sémantique longue durée.
 
-### 7.2 SupervisorAgent
-
-Responsabilité :
-- produire une première route globale ;
-- utiliser le LLM si disponible ;
-- basculer vers un routage par mots-clés si nécessaire.
-
-Routes possibles :
-- `greeting`
-- `search`
-- `summary`
-- `rag`
-- `planning`
-- `correction`
-
-Le superviseur reste utile même avec un planner LLM : il donne un signal rapide au planner et sert de garde-fou si la planification échoue.
-
-### 7.3 LLMPlannerAgent
+### 7.2 LLMPlannerAgent
 
 Responsabilité :
 - analyser la demande utilisateur ;
@@ -366,6 +344,17 @@ Responsabilité :
 - décider si retrieval, RAG, critic et safety sont nécessaires ;
 - choisir les outils attendus ;
 - fournir une raison courte.
+
+Ce planner est désormais le seul point de classification d’intention du
+workflow. Un agent superviseur existait auparavant en amont pour produire une
+route rapide par mots-clés/LLM, mais il a été retiré : sa sortie n’était
+utilisée que comme indice textuel dans le prompt du planner, et était de
+toute façon toujours écrasée par `ToolRouterAgent` une fois le plan produit —
+c’était un appel LLM supplémentaire (coût + latence) pour un résultat sans
+effet structurel sur le graphe. Le fallback par mots-clés du superviseur
+(greeting/summary/planning/correction) a été repris directement dans le
+fallback déterministe du planner, donc la robustesse en cas de panne LLM
+reste identique.
 
 Sortie validée par Pydantic :
 
@@ -410,7 +399,7 @@ alors l’agent produit un fallback déterministe.
 
 Cette approche est plus proche des architectures modernes que le planner précédent, qui était entièrement déterministe.
 
-### 7.4 ToolRouterAgent
+### 7.3 ToolRouterAgent
 
 Responsabilité :
 - lire `PlannerDecision` ;
@@ -427,7 +416,7 @@ Routes de sortie :
 
 Il agit comme un pont entre la décision abstraite du planner et les transitions concrètes du graphe.
 
-### 7.5 SearchAgent
+### 7.4 SearchAgent
 
 Responsabilité :
 - interroger Elasticsearch ;
@@ -443,7 +432,7 @@ Métadonnées exposées :
 
 Il reste la base full-text du RAG.
 
-### 7.6 HybridRetrieverAgent
+### 7.5 HybridRetrieverAgent
 
 Responsabilité :
 - fusionner les résultats full-text Elasticsearch ;
@@ -466,7 +455,7 @@ Positionnement :
 - l’architecture est prête pour une recherche hybride ;
 - la recherche vectorielle réelle reste à brancher plus tard.
 
-### 7.7 RerankerAgent
+### 7.6 RerankerAgent
 
 Responsabilité :
 - filtrer les documents ;
@@ -474,9 +463,9 @@ Responsabilité :
 - limiter le nombre de sources envoyées au LLM.
 
 Implémentation actuelle :
-- reranking heuristique ;
-- score Elasticsearch ;
-- bonus lexical si les termes de la question apparaissent dans le titre ou le snippet ;
+- score lexical : score Elasticsearch + bonus si les termes de la question apparaissent dans le titre ou le snippet ;
+- score sémantique optionnel (`SEMANTIC_RERANKER_ENABLED`) : similarité cosinus entre l’embedding de la question et celui de chaque document, calculés via `HuggingFaceEmbeddingService` (réutilise le client HuggingFace Router déjà configuré, modèle `MODEL_EMBEDDING`) ;
+- si l’appel d’embeddings échoue, repli silencieux sur le score lexical seul ;
 - limitation via `MAX_RAG_DOCUMENTS`.
 
 Métriques produites :
@@ -484,12 +473,15 @@ Métriques produites :
 - `reranked_count`
 - `top_score`
 - `sources_used`
+- `semantic_reranking_used`
 
 Positionnement :
-- ce n’est pas encore un cross-encoder ;
-- mais le pipeline isole déjà clairement l’étape de reranking.
+- ce n’est pas encore un cross-encoder dédié (le scoring sémantique utilise des embeddings bi-encodeur) ;
+- mais le reranking dispose maintenant d’un vrai signal sémantique, pas seulement lexical.
 
-### 7.8 ContextCompressionAgent
+Détail complet et limites connues : [backend/app/agents/RAG_SYSTEM.md](backend/app/agents/RAG_SYSTEM.md).
+
+### 7.7 ContextCompressionAgent
 
 Responsabilité :
 - réduire les snippets trop longs ;
@@ -505,7 +497,7 @@ MAX_RAG_CONTEXT_CHARS=4000
 
 L’agent peut utiliser une compression locale. Une compression LLM existe comme point d’extension, mais n’est pas forcée par défaut.
 
-### 7.9 SummaryAgent
+### 7.8 SummaryAgent
 
 Responsabilité :
 - produire une réponse directe ;
@@ -519,7 +511,7 @@ Il est utilisé pour :
 - demandes de correction ;
 - fallback si la route est inconnue ou non documentaire.
 
-### 7.10 RAGAgent
+### 7.9 RAGAgent
 
 Responsabilité :
 - utiliser les documents rerankés ou les résultats de recherche ;
@@ -538,7 +530,7 @@ Comportement si aucun document n’est disponible :
 - l’agent répond clairement que l’information n’a pas été trouvée dans les documents indexés ;
 - il évite de fabriquer une réponse documentaire.
 
-### 7.11 LLMCriticAgent
+### 7.10 LLMCriticAgent
 
 Responsabilité :
 - évaluer la réponse provisoire ;
@@ -564,7 +556,7 @@ Sortie structurée :
 
 Si le LLM critic échoue, l’agent bascule vers `CriticAgent`, le critic déterministe existant.
 
-### 7.12 SafetyGuardAgent
+### 7.11 SafetyGuardAgent
 
 Responsabilité :
 - détecter les secrets évidents ;
@@ -585,7 +577,7 @@ Sortie structurée :
 
 Le safety guard reste léger. Il ne remplace pas une vraie revue sécurité, mais il introduit un garde-fou utile pour un système proche production.
 
-### 7.13 FinalAnswerAgent
+### 7.12 FinalAnswerAgent
 
 Responsabilité :
 - choisir la meilleure réponse disponible ;
@@ -631,7 +623,7 @@ Le projet couvre maintenant plusieurs briques avancées :
 - recherche full-text ;
 - interface de recherche vectorielle future ;
 - fusion de résultats ;
-- reranking heuristique ;
+- reranking lexical + sémantique (embeddings HuggingFace) ;
 - compression de contexte ;
 - génération ancrée ;
 - sources visibles ;
@@ -642,9 +634,8 @@ Le projet couvre maintenant plusieurs briques avancées :
 ### 8.3 Ce qui reste à brancher
 
 Le projet ne force pas encore :
-- embeddings réels ;
-- index vectoriel ;
-- cross-encoder ;
+- index vectoriel pour le retrieval (les embeddings existent déjà côté reranking via le HuggingFace Router, mais pas encore pour la recherche elle-même) ;
+- cross-encoder dédié ;
 - reranker LLM actif par défaut ;
 - citations phrase par phrase ;
 - scoring automatique de factualité à grande échelle.
@@ -776,6 +767,8 @@ MAX_USER_MESSAGE_CHARS=8000
 MAX_RAG_CONTEXT_CHARS=4000
 MAX_RAG_DOCUMENTS=5
 LLM_TIMEOUT_SECONDS=60
+MODEL_EMBEDDING=BAAI/bge-small-en-v1.5
+SEMANTIC_RERANKER_ENABLED=true
 ```
 
 Ces limites réduisent les risques :
@@ -837,7 +830,7 @@ Le projet aligne désormais plusieurs pratiques modernes :
 - fallback déterministe ;
 - tool router ;
 - retrieval pipeline modulaire ;
-- reranking ;
+- reranking lexical + sémantique (embeddings) ;
 - compression de contexte ;
 - critic LLM ;
 - safety guard ;
@@ -853,9 +846,8 @@ Ces éléments rapprochent fortement le projet des architectures modernes constr
 Le projet reste un starter pédagogique avancé, pas encore une plateforme entreprise complète.
 
 Sont encore simples ou préparés mais non branchés :
-- store vectoriel réel ;
-- embeddings ;
-- reranker cross-encoder ;
+- store vectoriel réel pour le retrieval (les embeddings existent déjà, mais seulement côté reranking) ;
+- reranker cross-encoder dédié ;
 - critic hallucination avancé ;
 - évaluation continue ;
 - dashboard qualité ;
@@ -935,15 +927,20 @@ Prochaine étape :
 - indexer les embeddings ;
 - fusionner scores dense/sparse.
 
-### 15.2 Reranking heuristique
+### 15.2 Reranking : score sémantique ajouté, mais non calibré
 
-Le reranker actuel est volontairement simple.
+Le reranker combine désormais un score lexical et un score sémantique
+(embeddings HuggingFace via similarité cosinus), avec repli automatique sur
+le lexical seul si l’appel échoue. Le poids attribué au score sémantique
+(`SEMANTIC_WEIGHT = 2.0` dans `reranker_agent.py`) reste une valeur fixée
+arbitrairement, non calibrée sur des données réelles — sur un corpus où les
+scores Elasticsearch sont élevés, la contribution sémantique peut devenir
+négligeable dans le classement final.
 
 Prochaine étape :
-- cross-encoder ;
-- reranker LLM ;
-- scoring plus robuste ;
-- calibration des seuils.
+- mesurer la distribution réelle des scores Elasticsearch du corpus avant de choisir un poids, ou normaliser les deux scores sur une échelle commune ;
+- cross-encoder dédié pour un scoring plus robuste que des embeddings bi-encodeur ;
+- calibration des seuils sur des cas d’évaluation réels.
 
 ### 15.3 Critic encore dépendant de la qualité LLM
 
@@ -989,10 +986,11 @@ Prochaine étape :
 
 ### 16.1 Brancher un vrai store vectoriel
 
-Le premier saut de qualité RAG serait d’ajouter :
-- embeddings ;
-- index vectoriel ;
-- hybrid retrieval réel.
+Les embeddings existent déjà côté reranking (via le HuggingFace Router),
+mais pas encore pour la recherche elle-même. Le prochain saut de qualité RAG
+serait d’ajouter :
+- un index vectoriel (les embeddings déjà calculés pour le reranking pourraient être réutilisés/indexés) ;
+- un hybrid retrieval réel via `VectorStorePort`.
 
 ### 16.2 Ajouter un reranker robuste
 
@@ -1047,10 +1045,10 @@ Il dispose maintenant de :
 - Redis ;
 - Elasticsearch ;
 - HuggingFace Router ;
-- planner LLM ;
+- planner LLM (avec fallback déterministe, sans superviseur redondant) ;
 - tool router ;
 - retrieval hybride extensible ;
-- reranking ;
+- reranking lexical + sémantique (embeddings) ;
 - compression de contexte ;
 - RAG avec sources ;
 - critic LLM ;

@@ -23,12 +23,12 @@ from app.agents.reranker_agent import RerankerAgent
 from app.agents.safety_guard_agent import SafetyGuardAgent
 from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
-from app.agents.supervisor_agent import SupervisorAgent
 from app.agents.tool_router_agent import ToolRouterAgent
 from app.config.settings import settings
 from app.logger import clear_log_context, logger, set_log_context, update_log_context
 from app.memory.redis_memory import RedisMemoryService
 from app.models.chat_models import AgentResult, ChatRequest, ChatResponse
+from app.services.embedding_service import HuggingFaceEmbeddingService
 from app.services.llm_service import LLMService
 from app.services.search_service import SearchService
 from app.state import GraphState
@@ -62,13 +62,19 @@ class ChatWorkflow:
         self.llm_service = LLMService()
 
         self.memory_agent = MemoryAgent(self.memory_service)
-        self.supervisor = SupervisorAgent(llm_service=self.llm_service, use_llm_routing=True)
         self.planner_agent = LLMPlannerAgent(self.llm_service)
         self.tool_router_agent = ToolRouterAgent()
         self.summary_agent = SummaryAgent(self.llm_service)
         self.search_agent = SearchAgent(self.search_service)
         self.hybrid_retriever_agent = HybridRetrieverAgent()
-        self.reranker_agent = RerankerAgent(max_results=settings.max_rag_documents)
+        self.reranker_agent = RerankerAgent(
+            max_results=settings.max_rag_documents,
+            embedding_service=(
+                HuggingFaceEmbeddingService(self.llm_service)
+                if settings.semantic_reranker_enabled
+                else None
+            ),
+        )
         self.context_compression_agent = ContextCompressionAgent(
             self.llm_service,
             max_chars=settings.max_rag_context_chars,
@@ -192,7 +198,6 @@ class ChatWorkflow:
         graph = StateGraph(GraphStateDict)
 
         graph.add_node("memory", self._agent_node("MemoryAgent", self.memory_agent.run))
-        graph.add_node("supervisor", self._supervisor_node)
         graph.add_node("planner", self._agent_node("LLMPlannerAgent", self.planner_agent.run))
         graph.add_node("tool_router", self._agent_node("ToolRouterAgent", self.tool_router_agent.run))
         graph.add_node("greeting", self._greeting_node)
@@ -209,8 +214,7 @@ class ChatWorkflow:
         graph.add_node("final_answer", self._agent_node("FinalAnswerAgent", self.final_answer_agent.run))
 
         graph.add_edge(START, "memory")
-        graph.add_edge("memory", "supervisor")
-        graph.add_edge("supervisor", "planner")
+        graph.add_edge("memory", "planner")
         graph.add_edge("planner", "tool_router")
         graph.add_conditional_edges(
             "tool_router",
@@ -313,32 +317,6 @@ class ChatWorkflow:
 
         return node
 
-    async def _supervisor_node(self, payload: GraphStateDict) -> GraphStateDict:
-        state = GraphState.from_mapping(payload)
-        update_log_context(agent_type="SupervisorAgent")
-        started_at = time.perf_counter()
-        logger.bind(
-            conversation_id=state.conversation_id,
-            message_preview=state.user_message[:120],
-        ).info("LangGraph node started.")
-        route = await self.supervisor.decide_route(state.user_message)
-        state.route = route
-        update_log_context(route=route)
-        result = AgentResult(
-            agent="supervisor",
-            output=f"Selected route: {route}",
-            metadata={"route": route},
-        )
-        state.record_result(result)
-        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
-        state.evaluation.setdefault("latency_ms", {})["SupervisorAgent"] = elapsed_ms
-        logger.bind(
-            conversation_id=state.conversation_id,
-            route=route,
-            elapsed_ms=elapsed_ms,
-        ).info("LangGraph node completed.")
-        return state.to_dict()
-
     async def _greeting_node(self, payload: GraphStateDict) -> GraphStateDict:
         state = GraphState.from_mapping(payload)
         update_log_context(agent_type="Greeting", route=state.route or "-")
@@ -390,16 +368,6 @@ class ChatWorkflow:
         if route in {"document_qa", "rag"}:
             return "rag"
         return "fallback"
-
-    def _route_after_planner(self, payload: GraphStateDict) -> str:
-        route = payload.get("route") or "rag"
-        if route == "greeting":
-            return "greeting"
-        if route == "search":
-            return "search"
-        if route in {"summary", "simple_llm", "planning", "correction"}:
-            return "summary"
-        return "rag"
 
     def _route_after_retrieval(self, payload: GraphStateDict) -> str:
         route = payload.get("route") or "rag"
