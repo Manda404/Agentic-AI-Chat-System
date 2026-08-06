@@ -29,7 +29,7 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 
 ### 2.4 Python-dotenv
 - Rôle principal : charger les variables d’environnement depuis un fichier .env.
-- À quoi ça sert ici : configurer les clés API, les URLs Redis/Elasticsearch, les secrets JWT, etc.
+- À quoi ça sert ici : configurer les clés API, les URIs Redis Cloud/MongoDB Atlas, les secrets JWT, etc.
 
 ### 2.5 OpenAI Python client
 - Rôle principal : client HTTP compatible avec l’API OpenAI.
@@ -57,15 +57,15 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 - Rôle principal : extraction de texte depuis des fichiers PDF.
 - À quoi ça sert ici : convertir le contenu d’un PDF en texte exploitable pour l’indexation et la recherche.
 
-### 2.11 Redis
-- Rôle principal : base de données clé-valeur en mémoire / cache.
+### 2.11 Redis (Redis Cloud)
+- Rôle principal : base de données clé-valeur en mémoire / cache, hébergée en managé sur Redis Cloud (tier gratuit).
 - À quoi ça sert ici : stocker l’historique des conversations, mettre en cache les réponses, et conserver des données utilisateur de manière temporaire ou rapide.
-- Pourquoi c’est utile : cela rend le système plus réactif et permet de conserver des informations de session.
+- Pourquoi c’est utile : cela rend le système plus réactif et permet de conserver des informations de session, sans avoir à héberger de serveur Redis soi-même.
 
-### 2.12 Elasticsearch
-- Rôle principal : moteur de recherche et d’indexation documentaire.
-- À quoi ça sert ici : stocker les documents ingérés (CSV/PDF) et retrouver les informations pertinentes à partir d’une requête utilisateur.
-- Pourquoi c’est utile : c’est la base du mécanisme RAG du projet.
+### 2.12 MongoDB Atlas (Atlas Search + Atlas Vector Search)
+- Rôle principal : base de données documents managée, avec deux index construits sur la même collection : un index full-text (Atlas Search, basé sur Lucene) et un index vectoriel (Atlas Vector Search).
+- À quoi ça sert ici : stocker les documents ingérés (CSV/PDF) et retrouver les informations pertinentes à partir d’une requête utilisateur, à la fois par mots-clés et par similarité sémantique — les deux résultats sont ensuite fusionnés par `HybridRetrieverAgent`.
+- Pourquoi c’est utile : c’est la base du mécanisme RAG hybride du projet, sans avoir à faire tourner ni synchroniser deux bases de données séparées (une pour le full-text, une pour les vecteurs).
 
 ### 2.13 Langfuse
 - Rôle principal : outil d’observabilité et de traçage des appels LLM.
@@ -79,8 +79,8 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 
 ### 2.15 Embeddings HuggingFace
 - Rôle principal : vecteurs numériques représentant le sens d’un texte.
-- À quoi ça sert ici : le `RerankerAgent` calcule un embedding de la question et de chaque document candidat (via le même client HuggingFace Router que le LLM) pour un score de similarité sémantique, en complément du score lexical.
-- Pourquoi c’est utile : le classement des documents ne dépend plus uniquement du recouvrement de mots-clés.
+- À quoi ça sert ici : calculés via la route `pipeline/feature-extraction` du HuggingFace Router (le endpoint `/v1/embeddings` compatible OpenAI ne dessert aucun modèle d'embedding testé). Utilisés à deux endroits : à l'ingestion, pour peupler le champ `embedding` de chaque document (indexé par Atlas Vector Search) ; à la requête, par `RerankerAgent` pour un score de similarité sémantique en complément du score lexical, et par `MongoVectorStore` pour la recherche vectorielle elle-même.
+- Pourquoi c’est utile : le classement et le recall des documents ne dépendent plus uniquement du recouvrement de mots-clés.
 
 ---
 
@@ -110,18 +110,22 @@ L’objectif est de permettre à un utilisateur de poser une question, de récup
 
 ## 4. Infrastructure et services externes
 
-### 4.1 Podman Compose
-- Rôle principal : orchestrer les services locaux du projet.
-- À quoi ça sert ici : démarrer Redis et Elasticsearch localement avec une seule commande.
-- Pourquoi c’est utile : cela rend l’environnement de développement reproductible.
+Aucun service d'infrastructure n'est auto-hébergé : Redis et MongoDB tournent
+tous les deux en cloud, sur des tiers gratuits, aussi bien en développement
+local qu'en production. Il n'y a donc plus de `podman-compose`/`docker-compose`
+dans le projet.
 
-### 4.2 Redis Stack
-- Rôle principal : version Redis avec outils complémentaires.
-- À quoi ça sert ici : fournir la mémoire du système et éventuellement des vues de gestion ou d’inspection utiles en développement.
+### 4.1 Redis Cloud
+- Rôle principal : instance Redis managée (tier gratuit, 30 Mo).
+- À quoi ça sert ici : fournir la mémoire du système (historique de conversation, cache, rate limiting), accessible depuis n'importe quel environnement (dev local ou déploiement) via `REDIS_URL`.
 
-### 4.3 Elasticsearch 9
-- Rôle principal : moteur de recherche documentaire embarqué dans l’infrastructure locale.
-- À quoi ça sert ici : héberger les documents indexés et répondre aux requêtes de recherche.
+### 4.2 MongoDB Atlas
+- Rôle principal : cluster MongoDB managé (tier gratuit M0), avec Atlas Search et Atlas Vector Search activés sur la même collection.
+- À quoi ça sert ici : héberger les documents indexés (full-text + vecteurs) et répondre aux requêtes de recherche hybride, via `MONGODB_URI`.
+
+### 4.3 Makefile
+- Rôle principal : lancer backend et frontend ensemble en local.
+- À quoi ça sert ici : `make install` installe les dépendances (venv Python + npm), `make dev` démarre les deux serveurs en parallèle.
 
 ---
 
@@ -133,8 +137,8 @@ Le workflow LangGraph enchaîne 12 agents spécialisés (rôle détaillé dans
 - `MemoryAgent` : charge le contexte de conversation.
 - `LLMPlannerAgent` : décide de l’intention et du plan (avec fallback déterministe par mots-clés — il n’y a plus d’agent superviseur séparé, cette étape a été fusionnée dans le planner).
 - `ToolRouterAgent` : convertit le plan en route concrète pour le graphe.
-- `SearchAgent` : récupère des documents pertinents dans Elasticsearch.
-- `HybridRetrieverAgent` : fusionne/déduplique les résultats (prêt pour une future recherche vectorielle).
+- `SearchAgent` : récupère des documents pertinents dans MongoDB Atlas (full-text, Atlas Search).
+- `HybridRetrieverAgent` : fusionne/déduplique les résultats full-text avec ceux de la recherche vectorielle (MongoDB Atlas Vector Search, via `MongoVectorStore`).
 - `RerankerAgent` : réordonne les documents (score lexical + score sémantique via embeddings).
 - `ContextCompressionAgent` : réduit le contexte avant envoi au LLM.
 - `SummaryAgent` : produit une réponse directe (hors RAG).
@@ -158,15 +162,15 @@ Le workflow LangGraph enchaîne 12 agents spécialisés (rôle détaillé dans
 - FastAPI / Uvicorn : exposer l’API backend.
 - LangGraph : orchestrer le workflow multi-agent en graphe d’états.
 - Pydantic : valider les données.
-- Redis : mémoire, cache et historique.
-- Elasticsearch : recherche documentaire et indexation.
+- Redis Cloud : mémoire, cache et historique.
+- MongoDB Atlas : recherche documentaire hybride (full-text + vecteurs) et indexation.
 - HuggingFace Router / OpenAI client : appels au modèle LLM et aux embeddings.
 - Loguru / Langfuse : logs et observabilité.
 - Next.js / React / TypeScript : interface utilisateur.
-- Podman Compose : infrastructure locale.
+- Makefile : lancer backend + frontend ensemble en local.
 
 ---
 
 ## 7. En une phrase
 
-Le projet utilise un stack moderne composé de Python pour le backend agentique, de Redis et Elasticsearch pour la mémoire et la recherche, d’un modèle LLM pour la génération, et de Next.js/React pour l’interface utilisateur.
+Le projet utilise un stack moderne composé de Python pour le backend agentique, de Redis Cloud et MongoDB Atlas pour la mémoire et la recherche hybride, d’un modèle LLM pour la génération, et de Next.js/React pour l’interface utilisateur.

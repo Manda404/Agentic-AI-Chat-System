@@ -11,7 +11,7 @@ Next.js chat UI for the Agentic RAG Platform backend.
 - Shows route selected by supervisor
 - Shows which agents were used
 - Shows raw agent outputs for learning
-- Can trigger sample Elasticsearch ingest from the UI
+- Can trigger sample MongoDB Atlas ingest from the UI
 
 ## Connected backend endpoints
 

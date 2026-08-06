@@ -48,11 +48,12 @@ class Settings(BaseModel):
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_ttl_seconds: int = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
     
-    elasticsearch_url: str = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-    elasticsearch_index: str = os.getenv("ELASTICSEARCH_INDEX", "starter_documents")
-    elasticsearch_api_key: str = os.getenv("ELASTICSEARCH_API_KEY", "")
-    elasticsearch_user: str = os.getenv("ELASTICSEARCH_USER", "elastic")
-    elasticsearch_password: str = os.getenv("ELASTICSEARCH_PASSWORD", "")
+    mongodb_uri: str = os.getenv("MONGODB_URI", "")
+    mongodb_db_name: str = os.getenv("MONGODB_DB_NAME", "agentic_rag")
+    mongodb_collection: str = os.getenv("MONGODB_COLLECTION", "documents")
+    mongodb_search_index: str = os.getenv("MONGODB_SEARCH_INDEX", "documents_search")
+    mongodb_vector_index: str = os.getenv("MONGODB_VECTOR_INDEX", "documents_vector")
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "384"))
     
     langfuse_host: str = os.getenv("LANGFUSE_HOST", "http://localhost:3001")
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")

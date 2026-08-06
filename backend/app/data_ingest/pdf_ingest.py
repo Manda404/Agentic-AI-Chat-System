@@ -1,5 +1,5 @@
 """
-Extraction de texte depuis des fichiers PDF pour l'indexation Elasticsearch.
+Extraction de texte depuis des fichiers PDF pour l'indexation MongoDB Atlas.
 
 Chaque page de PDF devient un document distinct (titre "<fichier> - Page N"),
 ce qui permet ensuite de citer précisément la page source dans les

@@ -70,7 +70,7 @@ type HealthResponse = {
   environment: string;
   llm_provider: string;
   redis_connected: boolean;
-  elasticsearch_connected: boolean;
+  mongodb_connected: boolean;
 };
 
 type StatusTone = "online" | "offline" | "neutral";
@@ -285,7 +285,7 @@ export default function Home() {
       setLastHealthCheck(checkedAt);
       appendLog(
         "INFO",
-        `${reason}: backend=${data.status}, redis=${data.redis_connected ? "online" : "offline"}, elastic=${data.elasticsearch_connected ? "online" : "offline"}, provider=${data.llm_provider}.`
+        `${reason}: backend=${data.status}, redis=${data.redis_connected ? "online" : "offline"}, mongodb=${data.mongodb_connected ? "online" : "offline"}, provider=${data.llm_provider}.`
       );
     } catch (error) {
       setHealth(null);
@@ -576,7 +576,7 @@ export default function Home() {
       : "neutral";
 
   const redisTone: StatusTone = health?.redis_connected ? "online" : "offline";
-  const elasticTone: StatusTone = health?.elasticsearch_connected ? "online" : "offline";
+  const mongoTone: StatusTone = health?.mongodb_connected ? "online" : "offline";
   const modelTone: StatusTone =
     health?.llm_provider === "ollama" || health?.llm_provider === "huggingface"
       ? healthError
@@ -759,7 +759,7 @@ export default function Home() {
                 <div style={styles.cornerCard}>
                   <StatusDot label="backend" tone={backendTone} />
                   <StatusDot label="redis" tone={redisTone} />
-                  <StatusDot label="elastic" tone={elasticTone} />
+                  <StatusDot label="mongodb" tone={mongoTone} />
                   <StatusDot label="model" tone={modelTone} />
                 </div>
 
@@ -919,7 +919,7 @@ export default function Home() {
               <div style={styles.statusStack}>
                 <StatusDot label="backend" tone={backendTone} />
                 <StatusDot label="redis" tone={redisTone} />
-                <StatusDot label="elastic" tone={elasticTone} />
+                <StatusDot label="mongodb" tone={mongoTone} />
                 <StatusDot label="model" tone={modelTone} />
               </div>
 

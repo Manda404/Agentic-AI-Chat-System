@@ -18,7 +18,7 @@ Le mini framework d'évaluation est dans `backend/app/evaluation`.
 
 ## Tests
 
-Les tests unitaires utilisent des fakes pour éviter les vrais appels LLM, Redis ou Elasticsearch.
+Les tests unitaires utilisent des fakes pour éviter les vrais appels LLM, Redis ou MongoDB Atlas.
 
 Commande :
 

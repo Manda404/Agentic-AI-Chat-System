@@ -7,8 +7,6 @@ charset-normalizer==3.4.7
 click==8.4.1
 distro==1.9.0
 dnspython==2.8.0
-elastic-transport==9.4.2
-elasticsearch==9.4.1
 email-validator==2.3.0
 fastapi==0.137.2
 googleapis-common-protos==1.75.0
@@ -46,6 +44,7 @@ protobuf==6.33.6
 pydantic==2.13.4
 pydantic_core==2.46.4
 PyJWT==2.13.0
+pymongo==4.12.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 PyYAML==6.0.3

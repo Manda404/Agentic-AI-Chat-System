@@ -1,23 +1,31 @@
 """
-Service d'embeddings via le HuggingFace Router (client OpenAI déjà configuré).
+Service d'embeddings via HuggingFace Inference Providers (pipeline feature-extraction).
 
-Implémente le protocole `EmbeddingService` défini dans `retrieval_ports.py`,
-en réutilisant le client HTTP déjà initialisé par `LLMService` (même base
-URL, même clé API) pour éviter toute nouvelle dépendance ou configuration.
+Le endpoint OpenAI-compatible `/v1/embeddings` du HuggingFace Router ne
+dessert aucun modèle d'embedding testé (404 sur bge-small-en-v1.5,
+all-MiniLM-L6-v2, bge-m3...). La route qui fonctionne réellement est la
+route "pipeline" du provider hf-inference, exposée sous
+`router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction`
+(vérifié manuellement : 200 avec un vecteur par texte en entrée).
+
+Implémente le protocole `EmbeddingService` défini dans `retrieval_ports.py`.
 """
+
+import httpx
 
 from app.config.settings import settings
 from app.logger import logger
-from app.services.llm_service import LLMService
+
+FEATURE_EXTRACTION_URL = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
 
 
 class HuggingFaceEmbeddingService:
-    """Calcule des embeddings via l'endpoint `/embeddings` du HuggingFace Router."""
+    """Calcule des embeddings via la route pipeline feature-extraction du HuggingFace Router."""
 
-    def __init__(self, llm_service: LLMService):
-        """Réutilise le client OpenAI déjà pointé sur le HuggingFace Router."""
-        self.client = llm_service.client
+    def __init__(self):
+        """Lit le modèle d'embedding et la clé API directement depuis `settings`."""
         self.model = settings.embedding_model
+        self.api_key = settings.huggingface_api_key
 
     async def embed_query(self, text: str) -> list[float]:
         """Retourne le vecteur d'embedding pour une seule requête utilisateur."""
@@ -25,12 +33,19 @@ class HuggingFaceEmbeddingService:
         return vectors[0]
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Calcule les embeddings de plusieurs textes en une seule requête batch."""
-        if not self.client:
-            raise RuntimeError("HuggingFace Router client not initialized. Check HUGGINGFACE_API_KEY.")
+        """Calcule les embeddings de plusieurs textes en un seul appel batch."""
+        if not self.api_key:
+            raise RuntimeError("HUGGINGFACE_API_KEY not set. Check your .env file.")
 
         logger.bind(model=self.model, batch_size=len(texts)).info(
-            "Requesting embeddings from HuggingFace Router."
+            "Requesting embeddings from HuggingFace Inference Providers."
         )
-        response = self.client.embeddings.create(model=self.model, input=texts)
-        return [item.embedding for item in response.data]
+        url = FEATURE_EXTRACTION_URL.format(model=self.model)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"inputs": texts},
+            )
+            response.raise_for_status()
+            return response.json()

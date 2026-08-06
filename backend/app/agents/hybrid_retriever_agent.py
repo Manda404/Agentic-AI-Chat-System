@@ -2,7 +2,7 @@
 Agent de retrieval hybride.
 
 Ce module prépare une architecture RAG plus avancée que la recherche full-text
-pure. Aujourd'hui, il fusionne les résultats Elasticsearch déjà présents dans
+pure. Aujourd'hui, il fusionne les résultats MongoDB Atlas Search déjà présents dans
 `state.search_results` avec un éventuel `VectorStorePort`. Par défaut, le store
 vectoriel est `NullVectorStore`, donc aucune dépendance lourde n'est imposée.
 """

@@ -30,6 +30,7 @@ from app.memory.redis_memory import RedisMemoryService
 from app.models.chat_models import AgentResult, ChatRequest, ChatResponse
 from app.services.embedding_service import HuggingFaceEmbeddingService
 from app.services.llm_service import LLMService
+from app.services.mongo_vector_store import MongoVectorStore
 from app.services.search_service import SearchService
 from app.state import GraphState
 from app.state.graph_state import GraphStateDict
@@ -60,20 +61,19 @@ class ChatWorkflow:
         self.cache_service = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
         self.search_service = SearchService()
         self.llm_service = LLMService()
+        self.embedding_service = HuggingFaceEmbeddingService()
 
         self.memory_agent = MemoryAgent(self.memory_service)
         self.planner_agent = LLMPlannerAgent(self.llm_service)
         self.tool_router_agent = ToolRouterAgent()
         self.summary_agent = SummaryAgent(self.llm_service)
         self.search_agent = SearchAgent(self.search_service)
-        self.hybrid_retriever_agent = HybridRetrieverAgent()
+        self.hybrid_retriever_agent = HybridRetrieverAgent(
+            vector_store=MongoVectorStore(self.search_service, self.embedding_service)
+        )
         self.reranker_agent = RerankerAgent(
             max_results=settings.max_rag_documents,
-            embedding_service=(
-                HuggingFaceEmbeddingService(self.llm_service)
-                if settings.semantic_reranker_enabled
-                else None
-            ),
+            embedding_service=self.embedding_service if settings.semantic_reranker_enabled else None,
         )
         self.context_compression_agent = ContextCompressionAgent(
             self.llm_service,

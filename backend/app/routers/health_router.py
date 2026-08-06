@@ -2,9 +2,9 @@
 Endpoint `/health` : sonde de supervision (health check).
 
 Retourne l'état de l'application ET de ses dépendances externes
-(Redis, Elasticsearch), sans nécessiter d'authentification. C'est ce
+(Redis, MongoDB Atlas), sans nécessiter d'authentification. C'est ce
 que le frontend interroge en continu pour afficher les pastilles
-"online/offline" (backend, redis, elastic, model) dans son cockpit.
+"online/offline" (backend, redis, mongodb, model) dans son cockpit.
 Volontairement exempté du rate limiting (voir `RateLimitMiddleware`).
 """
 
@@ -25,7 +25,7 @@ def health() -> dict[str,object]:
     """Renvoie un instantané de l'état du backend et de ses dépendances."""
     logger.bind(
         redis_connected=memory_service.using_redis,
-        elasticsearch_connected=search_service.available,
+        mongodb_connected=search_service.available,
     ).info("Health check requested.")
     return {
         "status": "ok",
@@ -33,5 +33,5 @@ def health() -> dict[str,object]:
         "environment": settings.app_env,
         "llm_provider": settings.llm_provider,
         "redis_connected": memory_service.using_redis,
-        "elasticsearch_connected": search_service.available,
+        "mongodb_connected": search_service.available,
     }

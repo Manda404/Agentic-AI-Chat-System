@@ -4,10 +4,6 @@
 
 Charge l'historique depuis Redis ou depuis l'historique envoyé par le frontend.
 
-## SupervisorAgent
-
-Produit une route initiale rapide : `greeting`, `search`, `summary`, `rag`, `planning`, `correction`.
-
 ## LLMPlannerAgent
 
 Produit un `PlannerDecision` validé par Pydantic :
@@ -31,15 +27,15 @@ Convertit le plan en route LangGraph sûre :
 
 ## SearchAgent
 
-Interroge Elasticsearch et conserve les métadonnées source.
+Interroge MongoDB Atlas (Atlas Search, full-text) et conserve les métadonnées source.
 
 ## HybridRetrieverAgent
 
-Fusionne les résultats Elasticsearch avec une recherche vectorielle optionnelle. Le port vectoriel est prêt, mais le fallback par défaut ne force aucune dépendance lourde.
+Fusionne les résultats full-text avec ceux de la recherche vectorielle (MongoDB Atlas Vector Search, via `MongoVectorStore`).
 
 ## RerankerAgent
 
-Rerank heuristique basé sur le score Elasticsearch et le recouvrement lexical avec la question.
+Rerank heuristique basé sur le score full-text (MongoDB Atlas Search), le recouvrement lexical avec la question, et une similarité sémantique par embeddings si disponible.
 
 ## ContextCompressionAgent
 

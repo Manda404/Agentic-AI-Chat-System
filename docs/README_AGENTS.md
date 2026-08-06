@@ -68,7 +68,7 @@ Il lit la décision du planner et sélectionne une route sûre : salutation, ré
 
 ### 5. SearchAgent
 
-**Rôle :** rechercher les documents pertinents dans Elasticsearch.
+**Rôle :** rechercher les documents pertinents dans MongoDB Atlas (Atlas Search, full-text).
 
 Il envoie la question de l'utilisateur au service de recherche, conserve les résultats structurés et produit également une version textuelle lisible. Les titres, fichiers, pages, scores et extraits restent disponibles pour les étapes RAG suivantes.
 
@@ -78,7 +78,7 @@ Il envoie la question de l'utilisateur au service de recherche, conserve les ré
 
 **Rôle :** fusionner les résultats de plusieurs méthodes de recherche.
 
-Il combine les résultats full-text d'Elasticsearch avec ceux d'un moteur vectoriel optionnel. Il déduplique les documents, les trie par score et limite leur nombre. Le stockage vectoriel est actuellement optionnel grâce au port `VectorStorePort`.
+Il combine les résultats full-text (MongoDB Atlas Search) avec ceux de la recherche vectorielle (MongoDB Atlas Vector Search, via `MongoVectorStore`). Il déduplique les documents, les trie par score et limite leur nombre. Les deux sources sont branchées via le port `VectorStorePort`.
 
 **Résultats principaux :** une liste normalisée de documents et les métriques de retrieval.
 

@@ -1,10 +1,15 @@
 """
-Routes d'ingestion de documents dans Elasticsearch.
+Routes d'ingestion de documents dans MongoDB Atlas.
 
 Trois façons d'indexer des documents :
 - `POST /ingest/sample-data` : indexe le CSV d'exemple fourni avec le projet.
 - `POST /ingest/upload` : upload d'un fichier unique (PDF ou CSV) depuis le frontend.
 - `POST /ingest/batch` : parcourt un dossier serveur et indexe tous les PDF/CSV trouvés.
+
+Chaque document reçoit aussi un embedding (calculé via `HuggingFaceEmbeddingService`,
+le même service que celui utilisé pour le reranking sémantique) avant d'être inséré,
+afin d'alimenter à la fois l'index Atlas Search (full-text) et l'index Atlas Vector
+Search (sémantique) sur la même collection.
 
 Toutes ces routes nécessitent un utilisateur authentifié.
 """
@@ -13,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 import os
 import tempfile
 from pathlib import Path
+from typing import Dict, List
 from app.config.settings import settings
 from app.data_ingest.file_ingest import (
     detect_file_type,
@@ -29,15 +35,42 @@ from app.models.ingest_models import (
     IngestRequest,
     IngestResponse,
 )
+from app.services.embedding_service import HuggingFaceEmbeddingService
 from app.services.search_service import SearchService
 
 router = APIRouter(prefix=settings.api_prefix, tags=["ingest"])
 
 search_service = SearchService()
+embedding_service = HuggingFaceEmbeddingService()
+
+
+async def _attach_embeddings(documents: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Calcule un embedding par document (title + snippet) pour la recherche vectorielle.
+
+    Non bloquant : si le fournisseur d'embeddings échoue (quota, modèle
+    indisponible, timeout), l'ingestion continue sans le champ `embedding`.
+    Ces documents restent cherchables en full-text (Atlas Search), ils
+    seront simplement absents des résultats de recherche vectorielle
+    jusqu'à ré-ingestion avec un fournisseur d'embeddings disponible.
+    """
+    if not documents:
+        return documents
+    texts = [f"{document.get('title', '')}. {document.get('snippet', '')}" for document in documents]
+    try:
+        embeddings = await embedding_service.embed_texts(texts)
+    except Exception as exc:
+        logger.bind(reason=str(exc), document_count=len(documents)).warning(
+            "Embedding computation failed; indexing documents without vectors."
+        )
+        return documents
+    for document, embedding in zip(documents, embeddings):
+        document["embedding"] = embedding
+    return documents
 
 
 @router.post("/ingest/sample-data", response_model=IngestResponse)
-def ingest_sample_data(current_user: UserResponse = Depends(get_current_user)) -> IngestResponse:
+async def ingest_sample_data(current_user: UserResponse = Depends(get_current_user)) -> IngestResponse:
     """Charge et indexe le CSV d'exemple `backend/data/ai_tooling_catalog.csv`."""
     logger.bind(user_id=current_user.email).info("Sample ingest requested.")
     try:
@@ -45,13 +78,14 @@ def ingest_sample_data(current_user: UserResponse = Depends(get_current_user)) -
         logger.bind(user_id=current_user.email, document_count=len(documents)).info(
             "CSV documents loaded for ingest."
         )
+        documents = await _attach_embeddings(documents)
         indexed_count = search_service.bulk_index_documents(documents)
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             "Sample ingest completed."
         )
         return IngestResponse(
             indexed_count=indexed_count,
-            index_name=settings.elasticsearch_index,
+            index_name=settings.mongodb_collection,
             source_file="data/ai_tooling_catalog.csv",
         )
     except Exception as exc:
@@ -95,6 +129,7 @@ async def ingest_uploaded_file(
             f"Loaded {len(documents)} documents from {file.filename}"
         )
 
+        documents = await _attach_embeddings(documents)
         indexed_count = search_service.bulk_index_documents(documents)
 
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
@@ -103,7 +138,7 @@ async def ingest_uploaded_file(
 
         return FileIngestResponse(
             indexed_count=indexed_count,
-            index_name=settings.elasticsearch_index,
+            index_name=settings.mongodb_collection,
             file_name=file.filename,
             file_type=file_type,
             documents_processed=len(documents)
@@ -123,7 +158,7 @@ async def ingest_uploaded_file(
 
 
 @router.post("/ingest/batch", response_model=BatchIngestResponse)
-def ingest_batch_from_directory(
+async def ingest_batch_from_directory(
     current_user: UserResponse = Depends(get_current_user),
     request: IngestRequest = Body(default=IngestRequest())
 ) -> BatchIngestResponse:
@@ -147,7 +182,7 @@ def ingest_batch_from_directory(
             return BatchIngestResponse(
                 total_files_processed=0,
                 total_documents_indexed=0,
-                index_name=settings.elasticsearch_index,
+                index_name=settings.mongodb_collection,
                 files_summary=[],
                 errors=["No files found in the specified directory"]
             )
@@ -158,6 +193,7 @@ def ingest_batch_from_directory(
 
         for file_path, documents in results.items():
             try:
+                documents = await _attach_embeddings(documents)
                 indexed_count = search_service.bulk_index_documents(documents)
                 total_indexed += indexed_count
 
@@ -192,7 +228,7 @@ def ingest_batch_from_directory(
         return BatchIngestResponse(
             total_files_processed=len(results),
             total_documents_indexed=total_indexed,
-            index_name=settings.elasticsearch_index,
+            index_name=settings.mongodb_collection,
             files_summary=files_summary,
             errors=errors if errors else None
         )

@@ -34,8 +34,8 @@ Le projet est une application de chat IA composée de :
 - un frontend **Next.js / React / TypeScript** ;
 - un backend **FastAPI** ;
 - une orchestration **LangGraph** ;
-- une mémoire conversationnelle et un cache via **Redis** ;
-- une recherche documentaire via **Elasticsearch** ;
+- une mémoire conversationnelle et un cache via **Redis Cloud** ;
+- une recherche documentaire hybride (full-text + vectorielle) via **MongoDB Atlas** ;
 - un fournisseur LLM via **HuggingFace Router** compatible OpenAI ;
 - un cockpit frontend de debug ;
 - une couche d’évaluation légère ;
@@ -419,7 +419,7 @@ Il agit comme un pont entre la décision abstraite du planner et les transitions
 ### 7.4 SearchAgent
 
 Responsabilité :
-- interroger Elasticsearch ;
+- interroger MongoDB Atlas (Atlas Search, full-text) ;
 - récupérer les documents candidats ;
 - conserver les métadonnées utiles.
 
@@ -435,16 +435,16 @@ Il reste la base full-text du RAG.
 ### 7.5 HybridRetrieverAgent
 
 Responsabilité :
-- fusionner les résultats full-text Elasticsearch ;
-- intégrer une recherche vectorielle si disponible ;
+- fusionner les résultats full-text (MongoDB Atlas Search) ;
+- intégrer la recherche vectorielle (MongoDB Atlas Vector Search) ;
 - normaliser les résultats ;
 - exposer des métriques.
 
-Le projet prépare deux ports :
-- `EmbeddingService`
-- `VectorStorePort`
-
-Par défaut, le système utilise `NullVectorStore`, donc aucune dépendance lourde n’est imposée.
+Le projet expose deux ports :
+- `EmbeddingService` — implémenté par `HuggingFaceEmbeddingService`.
+- `VectorStorePort` — implémenté par `MongoVectorStore`, branché par défaut
+  dans `ChatWorkflow` (le `NullVectorStore` reste disponible comme fallback
+  neutre pour les tests ou un usage sans store configuré).
 
 Métriques produites :
 - `full_text_count`
@@ -452,8 +452,9 @@ Métriques produites :
 - `hybrid_count`
 
 Positionnement :
-- l’architecture est prête pour une recherche hybride ;
-- la recherche vectorielle réelle reste à brancher plus tard.
+- la recherche hybride est active par défaut, pas seulement préparée ;
+- vérifié en conditions réelles : une requête documentaire type retourne
+  `full_text_count=5`, `vector_count=8`, `hybrid_count=8` après fusion/dédup.
 
 ### 7.6 RerankerAgent
 
@@ -463,7 +464,7 @@ Responsabilité :
 - limiter le nombre de sources envoyées au LLM.
 
 Implémentation actuelle :
-- score lexical : score Elasticsearch + bonus si les termes de la question apparaissent dans le titre ou le snippet ;
+- score lexical : score full-text MongoDB Atlas Search + bonus si les termes de la question apparaissent dans le titre ou le snippet ;
 - score sémantique optionnel (`SEMANTIC_RERANKER_ENABLED`) : similarité cosinus entre l’embedding de la question et celui de chaque document, calculés via `HuggingFaceEmbeddingService` (réutilise le client HuggingFace Router déjà configuré, modèle `MODEL_EMBEDDING`) ;
 - si l’appel d’embeddings échoue, repli silencieux sur le score lexical seul ;
 - limitation via `MAX_RAG_DOCUMENTS`.
@@ -596,9 +597,9 @@ Cet agent garde la finalisation hors du workflow principal, ce qui rend le graph
 ```text
 Document CSV/PDF
     ↓
-Ingestion
+Ingestion (+ calcul d'embeddings)
     ↓
-Elasticsearch
+MongoDB Atlas (full-text + vecteurs)
     ↓
 SearchAgent
     ↓
@@ -621,7 +622,7 @@ FinalAnswerAgent
 
 Le projet couvre maintenant plusieurs briques avancées :
 - recherche full-text ;
-- interface de recherche vectorielle future ;
+- recherche vectorielle active (MongoDB Atlas Vector Search), fusionnée avec le full-text ;
 - fusion de résultats ;
 - reranking lexical + sémantique (embeddings HuggingFace) ;
 - compression de contexte ;
@@ -634,7 +635,6 @@ Le projet couvre maintenant plusieurs briques avancées :
 ### 8.3 Ce qui reste à brancher
 
 Le projet ne force pas encore :
-- index vectoriel pour le retrieval (les embeddings existent déjà côté reranking via le HuggingFace Router, mais pas encore pour la recherche elle-même) ;
 - cross-encoder dédié ;
 - reranker LLM actif par défaut ;
 - citations phrase par phrase ;
@@ -720,7 +720,7 @@ trace_id
 Exemples de métriques :
 - cache hit/miss ;
 - latence par agent ;
-- nombre de documents Elasticsearch ;
+- nombre de documents full-text (MongoDB Atlas Search) ;
 - nombre de résultats vectoriels ;
 - nombre de résultats hybrid ;
 - nombre de résultats rerankés ;
@@ -806,7 +806,7 @@ Il permet de définir des cas simples et de vérifier :
 Les tests utilisent des fakes pour éviter :
 - vrais appels LLM ;
 - vraie connexion Redis ;
-- vraie connexion Elasticsearch.
+- vraie connexion MongoDB Atlas.
 
 Les tests couvrent notamment :
 - compilation du graphe ;
@@ -846,7 +846,6 @@ Ces éléments rapprochent fortement le projet des architectures modernes constr
 Le projet reste un starter pédagogique avancé, pas encore une plateforme entreprise complète.
 
 Sont encore simples ou préparés mais non branchés :
-- store vectoriel réel pour le retrieval (les embeddings existent déjà, mais seulement côté reranking) ;
 - reranker cross-encoder dédié ;
 - critic hallucination avancé ;
 - évaluation continue ;
@@ -864,7 +863,7 @@ Sont encore simples ou préparés mais non branchés :
 | Planner | LLM + Pydantic + fallback |
 | Tool routing | Présent |
 | RAG | Modulaire avec reranking/compression |
-| Retrieval hybride | Préparé, fallback full-text |
+| Retrieval hybride | Actif : full-text (Atlas Search) + vectoriel (Atlas Vector Search) |
 | Critic | LLM optionnel + fallback |
 | Safety | Garde-fou léger présent |
 | Observabilité | Bonne pour debug avancé |
@@ -918,14 +917,20 @@ Les logs et le cockpit permettent de suivre :
 
 ## 15. Limitations et dettes techniques restantes
 
-### 15.1 Recherche vectorielle non branchée
+### 15.1 Recherche vectorielle — ✅ résolue (MongoDB Atlas Vector Search)
 
-`VectorStorePort` existe, mais aucun store vectoriel réel n’est encore connecté.
+`VectorStorePort` est maintenant implémenté par `MongoVectorStore`
+(`backend/app/services/mongo_vector_store.py`), branché par défaut dans
+`ChatWorkflow`, appuyé sur un index Atlas Vector Search (champ `embedding`,
+384 dimensions, `BAAI/bge-small-en-v1.5`). Les embeddings sont calculés à
+l'ingestion (stockés sur chaque document) et à la requête (question de
+l'utilisateur), via `HuggingFaceEmbeddingService`.
 
-Prochaine étape :
-- choisir une solution vectorielle ;
-- indexer les embeddings ;
-- fusionner scores dense/sparse.
+Limite restante : le fusion des scores dense (cosinus vectoriel) et sparse
+(BM25 full-text) reste une simple concaténation triée côté application
+(`HybridRetrieverAgent._merge`), pas une fusion de rang pondérée type RRF
+(reciprocal rank fusion) — voir 15.2 ci-dessous pour la question de
+calibration associée.
 
 ### 15.2 Reranking : score sémantique ajouté, mais non calibré
 
@@ -934,11 +939,15 @@ Le reranker combine désormais un score lexical et un score sémantique
 le lexical seul si l’appel échoue. Le poids attribué au score sémantique
 (`SEMANTIC_WEIGHT = 2.0` dans `reranker_agent.py`) reste une valeur fixée
 arbitrairement, non calibrée sur des données réelles — sur un corpus où les
-scores Elasticsearch sont élevés, la contribution sémantique peut devenir
-négligeable dans le classement final.
+scores full-text (MongoDB Atlas Search, BM25 via Lucene) sont élevés, la
+contribution sémantique peut devenir négligeable dans le classement final.
+Ce point gagne en importance maintenant que la recherche vectorielle
+contribue réellement des documents au retrieval (15.1) : un mauvais
+équilibrage pourrait faire dominer systématiquement les résultats full-text.
 
 Prochaine étape :
-- mesurer la distribution réelle des scores Elasticsearch du corpus avant de choisir un poids, ou normaliser les deux scores sur une échelle commune ;
+- mesurer la distribution réelle des scores MongoDB Atlas Search du corpus avant de choisir un poids, ou normaliser les deux scores sur une échelle commune ;
+- envisager `$rankFusion` côté MongoDB Atlas (reciprocal rank fusion native) pour déplacer la fusion dense/sparse côté base plutôt que dans `HybridRetrieverAgent` ;
 - cross-encoder dédié pour un scoring plus robuste que des embeddings bi-encodeur ;
 - calibration des seuils sur des cas d’évaluation réels.
 
@@ -984,13 +993,19 @@ Prochaine étape :
 
 ## 16. Recommandations d’évolution
 
-### 16.1 Brancher un vrai store vectoriel
+### 16.1 Calibrer et fiabiliser la fusion dense/sparse
 
-Les embeddings existent déjà côté reranking (via le HuggingFace Router),
-mais pas encore pour la recherche elle-même. Le prochain saut de qualité RAG
-serait d’ajouter :
-- un index vectoriel (les embeddings déjà calculés pour le reranking pourraient être réutilisés/indexés) ;
-- un hybrid retrieval réel via `VectorStorePort`.
+Le store vectoriel réel est en place (MongoDB Atlas Vector Search, voir
+15.1). Le prochain saut de qualité RAG porte maintenant sur la façon dont les
+deux signaux (full-text et vectoriel) se combinent :
+- calibrer/normaliser les poids lexical vs sémantique (15.2) plutôt que de
+  garder des constantes arbitraires ;
+- évaluer `$rankFusion` (reciprocal rank fusion natif MongoDB Atlas) comme
+  alternative à la fusion applicative actuelle de `HybridRetrieverAgent` ;
+- élargir la couverture d'embeddings : seuls les documents ingérés après le
+  fix du endpoint HuggingFace (`pipeline/feature-extraction`) ont un champ
+  `embedding` — les ingestions plus anciennes n'apparaîtront jamais en
+  recherche vectorielle tant qu'elles ne sont pas ré-ingérées.
 
 ### 16.2 Ajouter un reranker robuste
 
@@ -1042,12 +1057,12 @@ Le projet **Agentic RAG Platform** a évolué d’un starter pédagogique vers u
 Il dispose maintenant de :
 - FastAPI ;
 - LangGraph ;
-- Redis ;
-- Elasticsearch ;
+- Redis Cloud ;
+- MongoDB Atlas (full-text + vectoriel) ;
 - HuggingFace Router ;
 - planner LLM (avec fallback déterministe, sans superviseur redondant) ;
 - tool router ;
-- retrieval hybride extensible ;
+- retrieval hybride actif (full-text + vectoriel) ;
 - reranking lexical + sémantique (embeddings) ;
 - compression de contexte ;
 - RAG avec sources ;
@@ -1063,7 +1078,7 @@ Son positionnement actuel est celui d’un **starter production-grade avancé** 
 En résumé :
 
 ```text
-FastAPI + LangGraph + Redis + Elasticsearch
+FastAPI + LangGraph + Redis Cloud + MongoDB Atlas (full-text + vector)
 + LLM Planner + Tool Router
 + Hybrid Retrieval + Reranking + Context Compression
 + RAG + LLM Critic + Safety Guard

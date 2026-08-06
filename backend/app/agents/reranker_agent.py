@@ -40,7 +40,7 @@ class RerankerAgent:
         """
         Calcule un score reranké puis écrit `state.reranked_results`.
 
-        Le score combine le score Elasticsearch, un bonus lexical si les mots
+        Le score combine le score full-text (MongoDB Atlas Search), un bonus lexical si les mots
         de la question apparaissent dans le titre ou le snippet, et une
         similarité sémantique (embeddings) si disponible.
         """

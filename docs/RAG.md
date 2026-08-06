@@ -13,19 +13,20 @@ SearchAgent
 ## Recherche Hybride
 
 `HybridRetrieverAgent` combine :
-- résultats full-text Elasticsearch ;
-- résultats vectoriels via `VectorStorePort`, si un store est branché plus tard.
+- résultats full-text (MongoDB Atlas Search) ;
+- résultats vectoriels via `VectorStorePort`, implémenté par `MongoVectorStore` (MongoDB Atlas Vector Search).
 
-Par défaut, `NullVectorStore` retourne une liste vide. Le système reste donc compatible sans embeddings.
+Les deux stores tournent sur la même collection MongoDB (`documents`) : le full-text est indexé par `documents_search`, les vecteurs par `documents_vector` (champ `embedding`). Si la connexion Mongo est indisponible, `HybridRetrieverAgent` continue avec les seuls résultats déjà présents dans `state.search_results` (dégradation silencieuse, pas d'exception).
 
 ## Reranking
 
 Le reranker combine deux signaux :
-- score lexical : score Elasticsearch + bonus si les termes de la question
+- score lexical : score full-text (MongoDB Atlas Search) + bonus si les termes de la question
   apparaissent dans le titre/snippet ;
 - score sémantique : similarité cosinus entre l'embedding de la question et
-  l'embedding de chaque document candidat, calculés via le HuggingFace
-  Router (`HuggingFaceEmbeddingService`, modèle `MODEL_EMBEDDING`, défaut
+  l'embedding de chaque document candidat, calculés via la route
+  `pipeline/feature-extraction` du HuggingFace Router
+  (`HuggingFaceEmbeddingService`, modèle `MODEL_EMBEDDING`, défaut
   `BAAI/bge-small-en-v1.5`).
 
 Le score sémantique est optionnel (`SEMANTIC_RERANKER_ENABLED`) et retombe
@@ -49,7 +50,6 @@ Métriques produites :
 ## Limites
 
 Le projet ne contient pas encore :
-- index vectoriel (le `VectorStorePort` reste branché sur `NullVectorStore`) ;
 - reranker cross-encoder dédié (le scoring sémantique utilise des embeddings
   bi-encodeur, pas un cross-encoder) ;
 - citations phrase par phrase ;

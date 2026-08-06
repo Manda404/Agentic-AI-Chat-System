@@ -1,19 +1,19 @@
 # Guide de compréhension du projet — Agentic RAG Platform
 
-> Ce guide explique le projet tel qu’il est maintenant : une plateforme RAG agentique basée sur FastAPI, LangGraph, Redis, Elasticsearch, HuggingFace Router et Next.js. L’objectif est de comprendre rapidement **quoi fait le projet**, **comment il fonctionne**, **où modifier quoi**, et **quels points restent à surveiller**.
+> Ce guide explique le projet tel qu’il est maintenant : une plateforme RAG agentique basée sur FastAPI, LangGraph, Redis Cloud, MongoDB Atlas, HuggingFace Router et Next.js. L’objectif est de comprendre rapidement **quoi fait le projet**, **comment il fonctionne**, **où modifier quoi**, et **quels points restent à surveiller**.
 
 ---
 
 ## 1. Le projet en une phrase
 
-Ce projet est une application de **chat IA agentique** : l’utilisateur pose une question, le backend décide quels agents appeler, récupère éventuellement des documents dans Elasticsearch, génère une réponse avec un LLM, vérifie la qualité avec un critic, applique un garde-fou de sécurité, puis renvoie une réponse compatible avec le frontend.
+Ce projet est une application de **chat IA agentique** : l’utilisateur pose une question, le backend décide quels agents appeler, récupère éventuellement des documents dans MongoDB Atlas, génère une réponse avec un LLM, vérifie la qualité avec un critic, applique un garde-fou de sécurité, puis renvoie une réponse compatible avec le frontend.
 
 Il combine :
 - un **frontend Next.js / React / TypeScript** ;
 - un **backend FastAPI** ;
 - une orchestration **LangGraph réelle** ;
-- une mémoire et un cache via **Redis** ;
-- une recherche documentaire via **Elasticsearch** ;
+- une mémoire et un cache via **Redis Cloud** ;
+- une recherche documentaire hybride (full-text + vectorielle) via **MongoDB Atlas** (Atlas Search + Atlas Vector Search) ;
 - un fournisseur LLM via **HuggingFace Router** compatible OpenAI ;
 - un cockpit de debug pour observer route, agents, plan, sorties brutes, retrieval metrics, critic et safety.
 
@@ -70,10 +70,10 @@ Ce n’est pas encore une plateforme agentique d’entreprise complète, mais c�
                                                           │
                  ┌────────────────────────────────────────┼────────────────────────────────────────┐
                  ▼                                        ▼                                        ▼
-          ┌─────────────┐                         ┌───────────────┐                        ┌────────────┐
-          │ Redis        │                         │ Elasticsearch │                        │ HuggingFace │
-          │ memory/cache │                         │ documents     │                        │ Router LLM  │
-          └─────────────┘                         └───────────────┘                        └────────────┘
+          ┌─────────────┐                         ┌────────────────┐                       ┌────────────┐
+          │ Redis Cloud  │                         │ MongoDB Atlas  │                       │ HuggingFace │
+          │ memory/cache │                         │ full-text+vec  │                       │ Router LLM  │
+          └─────────────┘                         └────────────────┘                       └────────────┘
 ```
 
 Le graphe logique du chat :
@@ -124,11 +124,11 @@ docs/                            -> documentation architecture, agents, RAG, év
 | Orchestration | LangGraph | Exécute le workflow agentique en graphe |
 | Validation | Pydantic | Valide requêtes, réponses, plans, critic/safety |
 | LLM | HuggingFace Router via client OpenAI | Génération, planning, critic, safety optionnel |
-| Mémoire/cache | Redis | Historique, cache de réponses, utilisateurs |
-| Recherche documentaire | Elasticsearch | Indexation et recherche full-text |
+| Mémoire/cache | Redis Cloud | Historique, cache de réponses, utilisateurs |
+| Recherche documentaire | MongoDB Atlas | Indexation et recherche hybride : full-text (Atlas Search) + vectorielle (Atlas Vector Search) |
 | Frontend | Next.js / React / TypeScript | Chat + cockpit de debug |
 | Observabilité | Loguru + Langfuse optionnel | Logs, traces LLM, debugging |
-| Infra locale | podman-compose | Redis + Elasticsearch |
+| Infra | Redis Cloud + MongoDB Atlas | Services managés cloud (tiers gratuits) ; aucun conteneur local requis |
 
 Point important : contrairement à l’ancienne version du projet, **LangGraph est maintenant réellement utilisé** dans `backend/app/workflows/chat_workflow.py`.
 
@@ -158,8 +158,10 @@ Le fichier `backend/app/config/settings.py` centralise les variables d’environ
 Variables importantes :
 
 ```env
-REDIS_URL=redis://:redis_password@localhost:6379/0
-ELASTICSEARCH_URL=http://localhost:9200
+REDIS_URL=redis://default:<password>@<redis-cloud-endpoint>:<port>
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?appName=Cluster0
+MONGODB_SEARCH_INDEX=documents_search
+MONGODB_VECTOR_INDEX=documents_vector
 HUGGINGFACE_API_KEY=...
 AUTH_SECRET_KEY=...
 LANGGRAPH_CHECKPOINT_ENABLED=false
@@ -366,7 +368,7 @@ Convertit le plan en route LangGraph sûre :
 
 ### 9.4 SearchAgent
 
-Interroge Elasticsearch et retourne des documents avec :
+Interroge MongoDB Atlas (Atlas Search, full-text) et retourne des documents avec :
 - titre ;
 - fichier ;
 - page ;
@@ -376,20 +378,21 @@ Interroge Elasticsearch et retourne des documents avec :
 ### 9.5 HybridRetrieverAgent
 
 Fusionne :
-- les résultats full-text Elasticsearch ;
-- une recherche vectorielle optionnelle.
+- les résultats full-text (MongoDB Atlas Search) ;
+- les résultats de la recherche vectorielle (MongoDB Atlas Vector Search).
 
-Le port vectoriel est préparé avec :
-- `VectorStorePort`
-- `EmbeddingService`
-- `NullVectorStore`
+Le port vectoriel est implémenté par :
+- `VectorStorePort` (interface)
+- `EmbeddingService` (interface)
+- `MongoVectorStore` (implémentation branchée par défaut dans `ChatWorkflow`, appuyée sur `HuggingFaceEmbeddingService`)
+- `NullVectorStore` (fallback neutre, utilisé si aucun store n'est explicitement injecté)
 
-Par défaut, aucune dépendance vectorielle lourde n’est imposée.
+En pratique, `ChatWorkflow` branche toujours `MongoVectorStore` : la recherche vectorielle est active par défaut, pas seulement une interface préparée pour plus tard.
 
 ### 9.6 RerankerAgent
 
 Réordonne les documents en combinant deux scores :
-- score lexical : score Elasticsearch + recouvrement de mots avec la question ;
+- score lexical : score full-text (MongoDB Atlas Search) + recouvrement de mots avec la question ;
 - score sémantique (optionnel, `SEMANTIC_RERANKER_ENABLED`) : similarité
   cosinus entre l’embedding de la question et celui de chaque document,
   calculés via le HuggingFace Router (`MODEL_EMBEDDING`). Retombe
@@ -465,8 +468,8 @@ Construit la réponse finale :
 Pipeline actuel :
 
 ```text
-Ingestion CSV/PDF
-  -> Elasticsearch
+Ingestion CSV/PDF (+ calcul d'embeddings)
+  -> MongoDB Atlas (full-text + vecteurs)
   -> SearchAgent
   -> HybridRetrieverAgent
   -> RerankerAgent
@@ -478,9 +481,9 @@ Ingestion CSV/PDF
 ```
 
 Ce qui existe :
-- ingestion CSV/PDF ;
-- recherche full-text ;
-- interface pour future recherche vectorielle ;
+- ingestion CSV/PDF, avec calcul d'embeddings à la volée ;
+- recherche full-text (Atlas Search) ;
+- recherche vectorielle (Atlas Vector Search), fusionnée avec le full-text par `HybridRetrieverAgent` ;
 - reranking lexical + sémantique (embeddings HuggingFace) ;
 - compression de contexte ;
 - génération sourcée ;
@@ -489,7 +492,6 @@ Ce qui existe :
 - métriques de retrieval.
 
 Ce qui reste à brancher pour aller plus loin :
-- index vectoriel pour le retrieval (les embeddings existent déjà côté reranking, mais pas pour la recherche elle-même) ;
 - reranker cross-encoder dédié ;
 - citations phrase par phrase ;
 - évaluation continue de la factualité.
@@ -574,7 +576,7 @@ Il contient :
 - écran login/register ;
 - interface de chat ;
 - ingestion des données ;
-- statut backend / Redis / Elasticsearch ;
+- statut backend / Redis / MongoDB ;
 - cockpit de debug.
 
 Le cockpit affiche notamment :
@@ -686,8 +688,8 @@ Déroulé probable :
 3. MemoryAgent charge le contexte.
 4. LLMPlannerAgent produit un plan document_qa.
 5. ToolRouterAgent choisit rag.
-6. SearchAgent interroge Elasticsearch.
-7. HybridRetrieverAgent normalise/fusionne les résultats.
+6. SearchAgent interroge MongoDB Atlas (full-text) ; en parallèle logique, `MongoVectorStore` interroge l'index vectoriel.
+7. HybridRetrieverAgent normalise/fusionne les résultats full-text et vectoriels.
 8. RerankerAgent classe les documents (score lexical + sémantique).
 9. ContextCompressionAgent réduit le contexte.
 10. RAGAgent génère une réponse sourcée.
@@ -722,7 +724,7 @@ La réponse frontend inclut typiquement :
 | Modifier le plan structuré | `backend/app/agents/llm_planner_agent.py` |
 | Modifier le tool routing | `backend/app/agents/tool_router_agent.py` |
 | Modifier le RAG | `rag_agent.py`, `reranker_agent.py`, `context_compression_agent.py` |
-| Brancher un vector store | `backend/app/services/retrieval_ports.py` + `HybridRetrieverAgent` |
+| Changer d'implémentation de vector store | `backend/app/services/retrieval_ports.py` (interface) + `backend/app/services/mongo_vector_store.py` (implémentation actuelle) |
 | Modifier les champs API | `backend/app/models/chat_models.py` |
 | Modifier l’état partagé | `backend/app/state/graph_state.py` |
 | Changer les modèles LLM | variables `MODEL_*` dans `.env` |
@@ -737,7 +739,8 @@ La réponse frontend inclut typiquement :
 
 - `AUTH_SECRET_KEY` doit être changé hors dev.
 - `llm_provider="ollama"` existe dans la config, mais le service LLM réellement branché est HuggingFace Router.
-- Le vector store est préparé mais pas branché (le reranking sémantique n’en dépend pas : il calcule ses embeddings à la volée, sans index vectoriel).
+- Le vector store (`MongoVectorStore`, Atlas Vector Search) est branché par défaut. Le reranking sémantique, lui, n'en dépend pas : il calcule ses propres embeddings à la volée pour reclasser les candidats déjà récupérés, indépendamment de l'index vectoriel utilisé pour le recall.
+- Le calcul d'embeddings dépend de la disponibilité du endpoint `pipeline/feature-extraction` du HuggingFace Router : en cas d'échec (quota, modèle indisponible), l'ingestion et la recherche continuent en mode dégradé (documents sans embedding, recherche vectorielle vide pour ces documents), sans faire planter le workflow.
 - Le reranking combine un score lexical et un score sémantique (embeddings HuggingFace), mais ce n’est pas encore un cross-encoder dédié.
 - Le checkpoint est mémoire, pas persistant.
 - Le rate limiting est en mémoire locale.
@@ -748,23 +751,25 @@ La réponse frontend inclut typiquement :
 
 ## 20. Lancer le projet
 
-```bash
-# 1. Infrastructure
-podman-compose up -d
+Aucune infrastructure locale à démarrer : Redis (Redis Cloud) et MongoDB
+(Atlas) tournent tous les deux en cloud, sur des tiers gratuits. Il suffit de
+renseigner leurs URIs dans `backend/.env`.
 
-# 2. Backend
+```bash
+# 1. Configuration
 cd backend
 cp .env.example .env
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+# éditer .env : REDIS_URL, MONGODB_URI, HUGGINGFACE_API_KEY, ...
 
-# 3. Frontend
-cd frontend
-cp .env.example .env.local
-npm install
-npm run dev
+# 2. Backend + Frontend ensemble (depuis la racine du projet)
+make install   # venv Python + npm install
+make dev       # lance backend (:8000) et frontend (:3000) en parallèle
 
-# 4. Ouvrir
+# ou séparément :
+# make backend
+# make frontend
+
+# 3. Ouvrir
 http://localhost:3000
 ```
 
@@ -781,12 +786,12 @@ Ensuite :
 
 Ce projet est maintenant un **système de chat IA multi-agent orchestré par LangGraph**.
 
-Il reçoit un message, charge la mémoire, planifie l’exécution, choisit les outils, cherche éventuellement dans Elasticsearch, prépare le contexte documentaire, génère une réponse sourcée, la critique, la sécurise, la met en cache, puis expose tout le parcours au frontend.
+Il reçoit un message, charge la mémoire, planifie l’exécution, choisit les outils, cherche éventuellement dans MongoDB Atlas (full-text + vectoriel), prépare le contexte documentaire, génère une réponse sourcée, la critique, la sécurise, la met en cache, puis expose tout le parcours au frontend.
 
 En une ligne :
 
 ```text
-FastAPI + LangGraph + Redis + Elasticsearch + HuggingFace Router
+FastAPI + LangGraph + Redis Cloud + MongoDB Atlas + HuggingFace Router
 + Planner + Tool Router + RAG + Critic + Safety + Debug Cockpit
 ```
 
