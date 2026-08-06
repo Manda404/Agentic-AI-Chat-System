@@ -1,5 +1,5 @@
 """
-Lecture de fichiers CSV pour l'indexation Elasticsearch.
+Lecture de fichiers CSV pour l'indexation MongoDB Atlas.
 
 Le CSV doit avoir les colonnes `title`, `snippet`, `category` (obligatoires)
 et `source` (optionnelle). Chaque ligne devient un document indexable.

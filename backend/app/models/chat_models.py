@@ -19,7 +19,7 @@ class ChatRequest(BaseModel):
     history: List[ChatMessage] = Field(default_factory=list)
 
 class SearchResult(BaseModel):
-    """Un résultat de recherche Elasticsearch, avec sa localisation source si connue."""
+    """Un résultat de recherche MongoDB Atlas (full-text ou vectoriel), avec sa localisation source si connue."""
     title: str
     snippet: str
     score: float

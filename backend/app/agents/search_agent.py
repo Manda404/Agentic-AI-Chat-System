@@ -1,5 +1,5 @@
 """
-Agent de recherche documentaire Elasticsearch.
+Agent de recherche documentaire MongoDB Atlas (full-text, Atlas Search).
 
 Prend le message utilisateur brut, le passe tel quel à `SearchService.search`,
 puis met en forme les résultats (titre, fichier, page, extrait) en un
@@ -30,16 +30,16 @@ else:
 
 
 class SearchAgent:
-    """Cherche des documents pertinents dans Elasticsearch pour le message courant."""
+    """Cherche des documents pertinents dans MongoDB Atlas pour le message courant."""
 
     def __init__(self,search_service:SearchService):
-        """Injecte le service Elasticsearch réutilisé par l'agent."""
+        """Injecte le service MongoDB Atlas réutilisé par l'agent."""
         self.search_service = search_service
 
     @observe(name="search_agent")
     async def run(self, state:GraphState) -> AgentResult:
         """
-        Exécute la recherche Elasticsearch et remplit l'état partagé.
+        Exécute la recherche MongoDB Atlas et remplit l'état partagé.
 
         Étapes :
         1. appeler `SearchService.search` ;
@@ -69,7 +69,7 @@ class SearchAgent:
                 f"{index + 1}. {item.title}{location} — {item.snippet}"
             )
 
-        output = "Search results from Elasticsearch:\n" + "\n".join(lines) if lines else "No matching documents found."
+        output = "Search results from MongoDB Atlas:\n" + "\n".join(lines) if lines else "No matching documents found."
         
         state.search_output = output
         logger.bind(results_count=len(results), index_name=self.search_service.index_name).info(

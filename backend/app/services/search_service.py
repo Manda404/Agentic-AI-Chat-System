@@ -1,11 +1,15 @@
 """
-Service de recherche documentaire basé sur Elasticsearch.
+Service de recherche documentaire basé sur MongoDB Atlas (Atlas Search).
 
-Encapsule toute la logique Elasticsearch : connexion (tolérante aux
-pannes — si Elasticsearch est injoignable au démarrage, le service
-reste utilisable mais `available` devient `False` et toute recherche
-lève une erreur explicite), création d'index, indexation en masse, et
-recherche full-text multi-champs.
+Encapsule la connexion pymongo (tolérante aux pannes — si MongoDB Atlas est
+injoignable au démarrage, le service reste utilisable mais `available` devient
+`False` et toute recherche lève une erreur explicite) et la recherche full-text
+via l'index Atlas Search configuré côté cluster (`settings.mongodb_search_index`).
+
+L'indexation (`bulk_index_documents`) attend des documents déjà enrichis d'un
+champ `embedding` par l'appelant (voir `ingest_router.py`), afin que la même
+collection serve aussi de source à `MongoVectorStore` pour la recherche
+vectorielle (Atlas Vector Search).
 """
 
 from typing import Any, Dict, List
@@ -16,136 +20,102 @@ from app.models.chat_models import SearchResult
 
 
 class SearchService:
-    """Point d'accès unique à Elasticsearch pour indexer et rechercher des documents."""
+    """Point d'accès unique à MongoDB Atlas pour indexer et rechercher des documents (full-text)."""
 
     def __init__(self) -> None:
-        """Tente une connexion à Elasticsearch ; échoue silencieusement (mode dégradé) si indisponible."""
-        self.url = settings.elasticsearch_url
-        self.index_name = settings.elasticsearch_index
-        self.api_key = settings.elasticsearch_api_key
+        """Tente une connexion à MongoDB Atlas ; échoue silencieusement (mode dégradé) si indisponible."""
+        self.index_name = settings.mongodb_collection
         self._client = None
-        
+        self._collection = None
+
         try:
             import importlib
 
-            elasticsearch_module = importlib.import_module("elasticsearch")
-            elasticsearch_class = getattr(elasticsearch_module, "Elasticsearch")
-            
-            connection_params = {
-                "hosts": [self.url],
-                "verify_certs": False, 
-                "ssl_show_warn": False, 
-            }
-            
-            if self.api_key:
-                connection_params["api_key"] = self.api_key
-            elif settings.elasticsearch_user and settings.elasticsearch_password:
-                connection_params["basic_auth"] = (
-                    settings.elasticsearch_user,
-                    settings.elasticsearch_password
-                )
-            
-            
-            self._client = elasticsearch_class(**connection_params)
-            
-            
-            info = self._client.info()
+            pymongo_module = importlib.import_module("pymongo")
+            mongo_client_class = getattr(pymongo_module, "MongoClient")
+
+            self._client = mongo_client_class(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+            self._client.admin.command("ping")
+            self._collection = self._client[settings.mongodb_db_name][settings.mongodb_collection]
+
             logger.bind(
-                index_name=self.index_name,
-                url=self.url,
-                version=info.get("version", {}).get("number", "unknown"),
-            ).info("Elasticsearch client initialized.")
+                db_name=settings.mongodb_db_name,
+                collection=self.index_name,
+            ).info("MongoDB Atlas client initialized.")
 
         except Exception as exc:
-            logger.bind(index_name=self.index_name, url=self.url, reason=str(exc)).warning(
-                "Elasticsearch client unavailable during startup."
+            logger.bind(collection=self.index_name, reason=str(exc)).warning(
+                "MongoDB Atlas client unavailable during startup."
             )
             self._client = None
+            self._collection = None
 
-    def ensure_index(self) -> None:
-        """Crée l'index Elasticsearch avec son mapping s'il n'existe pas encore."""
-        if not self._client:
-            raise RuntimeError("Elasticsearch is not available.")
-        if not self._client.indices.exists(index=self.index_name):
-            logger.bind(index_name=self.index_name).info("Creating Elasticsearch index.")
-            self._client.indices.create(
-                index=self.index_name,
-                mappings={
-                    "properties": {
-                        "title": {"type": "text"},
-                        "snippet": {"type": "text"},
-                        "category": {"type": "keyword"},
-                        "source": {"type": "keyword"},
-                        "page_number": {"type": "integer"},
-                        "total_pages": {"type": "integer"},
-                        "file_name": {"type": "keyword"},
-                    }
-                },
-            )
-            
+    @property
+    def collection(self):
+        """Expose la collection pymongo (réutilisée par `MongoVectorStore`, évite une 2e connexion)."""
+        return self._collection
+
     def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> int:
-        """Indexe une liste de documents en une seule requête `_bulk` (crée l'index si besoin)."""
-        if not self._client:
-            raise RuntimeError("Elasticsearch is not available.")
-        logger.bind(index_name=self.index_name, document_count=len(documents)).info(
+        """Insère une liste de documents (déjà enrichis d'un champ `embedding` si besoin)."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available.")
+        logger.bind(collection=self.index_name, document_count=len(documents)).info(
             "Bulk index started."
         )
-        self.ensure_index()
-        operations: List[Dict[str, Any]] = []
-        for document in documents:
-            operations.append({"index": {"_index": self.index_name}})
-            operations.append(document)
-        response = self._client.bulk(operations=operations, refresh=True)
-        if response.get("errors"):
-            logger.bind(index_name=self.index_name).error("Bulk indexing completed with errors.")
-            raise RuntimeError("Bulk indexing completed with errors.")
-        logger.bind(index_name=self.index_name, document_count=len(documents)).info(
+        if not documents:
+            return 0
+        self._collection.insert_many(documents)
+        logger.bind(collection=self.index_name, document_count=len(documents)).info(
             "Bulk index completed."
         )
         return len(documents)
 
-
     async def search(self, query: str) -> List[SearchResult]:
-        """Recherche full-text (multi_match) sur title/snippet/category, top 5 résultats."""
-        if not self._client:
-            raise RuntimeError("Elasticsearch is not available. Please ingest data and start Elasticsearch.")
-        logger.bind(index_name=self.index_name, query_preview=query[:120]).info(
-            "Elasticsearch query started."
+        """Recherche full-text (Atlas Search, compound text) sur title/snippet/category, top 5 résultats."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available. Please ingest data and check MONGODB_URI.")
+        logger.bind(collection=self.index_name, query_preview=query[:120]).info(
+            "MongoDB Atlas Search query started."
         )
         try:
-            response = self._client.search(
-                index=self.index_name,
-                query={
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["title^2", "snippet", "category"],
+            pipeline = [
+                {
+                    "$search": {
+                        "index": settings.mongodb_search_index,
+                        "compound": {
+                            "should": [
+                                {"text": {"query": query, "path": "title", "score": {"boost": {"value": 2}}}},
+                                {"text": {"query": query, "path": "snippet"}},
+                                {"text": {"query": query, "path": "category"}},
+                            ]
+                        },
                     }
                 },
-                size=5,
-            )
-            hits = response.get("hits", {}).get("hits", [])
-            logger.bind(index_name=self.index_name, hits_count=len(hits)).info(
-                "Elasticsearch query completed."
+                {"$limit": 5},
+                {"$addFields": {"score": {"$meta": "searchScore"}}},
+            ]
+            hits = list(self._collection.aggregate(pipeline))
+            logger.bind(collection=self.index_name, hits_count=len(hits)).info(
+                "MongoDB Atlas Search query completed."
             )
             return [
                 SearchResult(
-                    title=hit.get("_source", {}).get("title", "Untitled"),
-                    snippet=hit.get("_source", {}).get("snippet", ""),
-                    score=float(hit.get("_score", 0.0)),
-                    source=hit.get("_source", {}).get("source", "elasticsearch"),
-                    page_number=hit.get("_source", {}).get("page_number"),
-                    file_name=hit.get("_source", {}).get("file_name"),
+                    title=hit.get("title", "Untitled"),
+                    snippet=hit.get("snippet", ""),
+                    score=float(hit.get("score", 0.0)),
+                    source=hit.get("source", "mongodb"),
+                    page_number=hit.get("page_number"),
+                    file_name=hit.get("file_name"),
                 )
                 for hit in hits
             ]
         except Exception as exc:
-            logger.bind(index_name=self.index_name, query_preview=query[:120]).exception(
-                "Elasticsearch query failed."
+            logger.bind(collection=self.index_name, query_preview=query[:120]).exception(
+                "MongoDB Atlas Search query failed."
             )
-            raise RuntimeError(f"Elasticsearch query failed: {exc}") from exc
-        
-    
+            raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
+
     @property
     def available(self) -> bool:
-     """True si la connexion Elasticsearch a réussi au démarrage (utilisé par `/health`)."""
-     return self._client is not None
+        """True si la connexion MongoDB Atlas a réussi au démarrage (utilisé par `/health`)."""
+        return self._collection is not None

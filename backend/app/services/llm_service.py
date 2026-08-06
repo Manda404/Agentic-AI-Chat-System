@@ -262,13 +262,11 @@ class LLMService:
         self,
         user_message: str,
         conversation_history: str = "",
-        route_hint: str = "",
     ) -> PlannerDecision:
         """Produit un plan JSON validé pour le workflow agentique."""
         prompt = LLMPrompts.planner(
             user_message=user_message,
             conversation_history=conversation_history,
-            route_hint=route_hint,
         )
         raw = await self.generate(
             prompt=prompt,

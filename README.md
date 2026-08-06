@@ -2,7 +2,7 @@
 
 # Agentic RAG Platform
 
-**Une plateforme RAG agentique, multi-agent et observable, construite avec FastAPI, LangGraph, Redis, Elasticsearch et Next.js.**
+**Une plateforme RAG agentique, multi-agent et observable, construite avec FastAPI, LangGraph, Redis Cloud, MongoDB Atlas et Next.js.**
 
 <img src="gitimg/1.png" alt="Chat Interface" width="600"/>
 
@@ -21,7 +21,7 @@ Ce projet cherche à résoudre cette problématique : **comment construire un as
 Le système répond à trois besoins concrets :
 
 - **Répondre à des questions utilisateur** avec une interface web simple.
-- **Exploiter des documents internes** grâce à un pipeline RAG basé sur Elasticsearch.
+- **Exploiter des documents internes** grâce à un pipeline RAG hybride basé sur MongoDB Atlas (full-text + recherche vectorielle).
 - **Rendre l’exécution transparente** grâce à un cockpit de debug qui affiche la route, les agents appelés, les résultats bruts, le plan, les métriques de retrieval, le critic et le safety guard.
 
 L’objectif n’est pas seulement de faire un chatbot, mais de montrer une architecture agentique structurée, progressive et proche d’un système production-grade.
@@ -35,7 +35,6 @@ Utilisateur
   -> Frontend Next.js
   -> Backend FastAPI
   -> MemoryAgent
-  -> SupervisorAgent
   -> LLMPlannerAgent
   -> ToolRouterAgent
   -> Search / RAG / Direct Answer
@@ -47,10 +46,10 @@ Utilisateur
 
 La méthode est la suivante :
 
-1. **Comprendre la demande** : le superviseur et le planner identifient l’intention.
+1. **Comprendre la demande** : le planner LLM identifie l’intention (avec fallback déterministe si le LLM échoue).
 2. **Choisir les bons outils** : le tool router décide si la réponse doit être directe, documentaire ou RAG.
-3. **Chercher les sources** : Elasticsearch récupère les documents pertinents.
-4. **Améliorer le contexte** : retrieval hybride préparé, reranking heuristique et compression de contexte.
+3. **Chercher les sources** : MongoDB Atlas Search récupère les documents pertinents (full-text).
+4. **Améliorer le contexte** : retrieval hybride (full-text + Atlas Vector Search), reranking lexical + sémantique (embeddings HuggingFace) et compression de contexte.
 5. **Générer une réponse** : le RAGAgent répond à partir des documents disponibles.
 6. **Contrôler la réponse** : le critic vérifie qualité, clarté et grounding.
 7. **Sécuriser la sortie** : le safety guard masque les secrets évidents.
@@ -61,8 +60,8 @@ La méthode est la suivante :
 **Backend**
 - FastAPI pour l’API HTTP.
 - LangGraph pour l’orchestration multi-agent.
-- Redis pour l’historique conversationnel et le cache.
-- Elasticsearch pour la recherche documentaire.
+- Redis Cloud pour l’historique conversationnel et le cache.
+- MongoDB Atlas (Atlas Search + Atlas Vector Search) pour la recherche documentaire hybride (full-text + sémantique).
 - HuggingFace Router compatible OpenAI pour les appels LLM.
 - Loguru et Langfuse optionnel pour l’observabilité.
 
@@ -73,7 +72,6 @@ La méthode est la suivante :
 
 **Agents Principaux**
 - `MemoryAgent`
-- `SupervisorAgent`
 - `LLMPlannerAgent`
 - `ToolRouterAgent`
 - `SearchAgent`
@@ -96,30 +94,22 @@ La méthode est la suivante :
 
 ## Démarrage Rapide
 
-1. Copier les fichiers `.env.example` et renseigner les clés nécessaires.
-2. Démarrer Redis et Elasticsearch :
+1. Copier `backend/.env.example` vers `backend/.env` et renseigner les clés nécessaires : clé HuggingFace, URI Redis Cloud (`REDIS_URL`) et URI MongoDB Atlas (`MONGODB_URI`). Aucun conteneur local n'est requis, Redis et MongoDB tournent tous les deux en cloud (tiers gratuits).
+2. Installer les dépendances (backend + frontend) :
 
 ```bash
-podman-compose up -d
+make install
 ```
 
-3. Démarrer le backend :
+3. Démarrer le backend et le frontend ensemble :
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+make dev
 ```
 
-4. Démarrer le frontend :
+Ça lance le backend (`:8000`) et le frontend (`:3000`) en parallèle dans le même terminal, avec un seul `Ctrl+C` pour tout arrêter. Chaque service reste aussi disponible séparément via `make backend` ou `make frontend`.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-5. Ouvrir :
+4. Ouvrir :
 
 ```text
 http://localhost:3000
@@ -132,6 +122,7 @@ Pour aller plus loin :
 - [Architecture](docs/ARCHITECTURE.md)
 - [Agents](docs/AGENTS.md)
 - [RAG](docs/RAG.md)
+- [RAG — détail du pipeline et limites connues](backend/app/agents/RAG_SYSTEM.md)
 - [Evaluation](docs/EVALUATION.md)
 - [Production Readiness](docs/PRODUCTION_READINESS.md)
 - [État de l’art](ETAT_DE_L_ART.md)
@@ -140,4 +131,4 @@ Pour aller plus loin :
 
 Ce projet est un **starter production-grade avancé** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
 
-Il n’est pas encore une plateforme d’entreprise complète : le store vectoriel réel, le reranker cross-encoder, le checkpoint persistant et l’évaluation continue restent des pistes d’évolution.
+Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant et l’évaluation continue restent des pistes d’évolution.

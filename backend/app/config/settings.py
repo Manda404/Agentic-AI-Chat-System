@@ -38,19 +38,22 @@ class Settings(BaseModel):
     huggingface_api_key: str = os.getenv("HUGGINGFACE_API_KEY", "")
     huggingface_model: str = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
     
-    model_summarization: str = os.getenv("MODEL_SUMMARIZATION", "") 
+    model_summarization: str = os.getenv("MODEL_SUMMARIZATION", "")
     model_code_generation: str = os.getenv("MODEL_CODE_GENERATION", "")
     model_question_answering: str = os.getenv("MODEL_QUESTION_ANSWERING", "")
     model_reasoning: str = os.getenv("MODEL_REASONING", "")
+    embedding_model: str = os.getenv("MODEL_EMBEDDING", "BAAI/bge-small-en-v1.5")
+    semantic_reranker_enabled: bool = os.getenv("SEMANTIC_RERANKER_ENABLED", "true").lower() == "true"
     
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     redis_ttl_seconds: int = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
     
-    elasticsearch_url: str = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200")
-    elasticsearch_index: str = os.getenv("ELASTICSEARCH_INDEX", "starter_documents")
-    elasticsearch_api_key: str = os.getenv("ELASTICSEARCH_API_KEY", "")
-    elasticsearch_user: str = os.getenv("ELASTICSEARCH_USER", "elastic")
-    elasticsearch_password: str = os.getenv("ELASTICSEARCH_PASSWORD", "")
+    mongodb_uri: str = os.getenv("MONGODB_URI", "")
+    mongodb_db_name: str = os.getenv("MONGODB_DB_NAME", "agentic_rag")
+    mongodb_collection: str = os.getenv("MONGODB_COLLECTION", "documents")
+    mongodb_search_index: str = os.getenv("MONGODB_SEARCH_INDEX", "documents_search")
+    mongodb_vector_index: str = os.getenv("MONGODB_VECTOR_INDEX", "documents_vector")
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "384"))
     
     langfuse_host: str = os.getenv("LANGFUSE_HOST", "http://localhost:3001")
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
