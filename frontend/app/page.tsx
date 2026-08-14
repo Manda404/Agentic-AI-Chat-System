@@ -74,6 +74,10 @@ type AuthResponse = {
   email: string;
 };
 
+type SessionResponse = {
+  email: string;
+};
+
 type HealthResponse = {
   status: string;
   app: string;
@@ -132,6 +136,7 @@ export default function Home() {
   const [token, setToken] = useState("");
   const [loggedInEmail, setLoggedInEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [sessionChecking, setSessionChecking] = useState(true);
   const [authMessage, setAuthMessage] = useState("Session offline.");
   const [ingestLoading, setIngestLoading] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
@@ -164,14 +169,63 @@ export default function Home() {
   useEffect(() => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
     const storedEmail = window.localStorage.getItem(EMAIL_STORAGE_KEY) ?? "";
-    if (storedToken) {
-      setToken(storedToken);
-      setLoggedInEmail(storedEmail);
-      setAuthMessage(`Session live for ${storedEmail || "saved user"}.`);
-      appendLog("INFO", `Recovered saved session for ${storedEmail || "saved user"}.`);
-    } else {
+
+    if (!storedToken) {
       appendLog("WARN", "No saved session detected. Login required.");
+      setSessionChecking(false);
+      return;
     }
+
+    const controller = new AbortController();
+
+    async function validateSavedSession() {
+      setAuthMessage("Validating saved session...");
+
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/v1/auth/me`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${storedToken}`,
+          },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+            window.localStorage.removeItem(EMAIL_STORAGE_KEY);
+            setAuthMessage("Saved session expired. Please login again.");
+            appendLog("WARN", "Saved session rejected and removed.");
+            return;
+          }
+
+          throw new Error("Session validation service unavailable.");
+        }
+
+        const data: SessionResponse = await response.json();
+        setToken(storedToken);
+        setLoggedInEmail(data.email || storedEmail);
+        setAuthMessage(`Session live for ${data.email || storedEmail}.`);
+        appendLog("INFO", `Recovered validated session for ${data.email || storedEmail}.`);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+
+        const message =
+          error instanceof Error ? error.message : "Unable to validate saved session.";
+        setAuthMessage(`${message} Please login again or retry later.`);
+        appendLog("ERROR", message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setSessionChecking(false);
+        }
+      }
+    }
+
+    void validateSavedSession();
+
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -951,7 +1005,16 @@ export default function Home() {
 
   return (
     <main style={styles.page}>
-      {!isAuthenticated ? (
+      {sessionChecking ? (
+        <section style={styles.authShell}>
+          <div style={authFrameStyle}>
+            <div style={styles.authPanel}>
+              <div style={styles.sectionKicker}>session</div>
+              <div style={styles.authFooterText}>validating saved session...</div>
+            </div>
+          </div>
+        </section>
+      ) : !isAuthenticated ? (
         <section style={styles.authShell}>
           <div style={authFrameStyle}>
             <div style={authTopBarStyle}>
