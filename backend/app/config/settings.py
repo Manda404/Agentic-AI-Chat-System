@@ -29,6 +29,12 @@ class Settings(BaseModel):
         ).split(",")
         if item.strip()
     ]
+    # En développement uniquement, autorise aussi le frontend lorsqu'il est
+    # ouvert via l'adresse privée de la machine (Wi-Fi/Ethernet).
+    backend_cors_dev_origin_regex: str = os.getenv(
+        "BACKEND_CORS_DEV_ORIGIN_REGEX",
+        r"^https?://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?$",
+    )
     
     llm_provider: Literal["ollama", "huggingface"] = os.getenv("LLM_PROVIDER", "ollama") 
     

@@ -91,6 +91,10 @@ class LLMPlannerAgent:
         "good morning", "good afternoon", "good evening",
     }
     SUMMARY_KEYWORDS = ["summary", "summarize", "summarise", "résume", "resume"]
+    DOCUMENT_KEYWORDS = [
+        "document", "documents", "indexed", "uploaded", "file", "files", "pdf",
+        "fichier", "fichiers", "indexé", "indexés", "téléversé", "téléchargé",
+    ]
     PLANNING_KEYWORDS = ["plan", "steps", "roadmap", "strategy", "multi-step", "étapes", "strategie"]
     CORRECTION_KEYWORDS = ["correct", "validate", "review", "critic", "fix", "corrige", "valide"]
 
@@ -117,7 +121,8 @@ class LLMPlannerAgent:
                 tools=["memory", "critic", "safety"],
                 reason="Greeting detected by fallback keyword match.",
             )
-        if any(word in lowered for word in self.SUMMARY_KEYWORDS):
+        is_document_request = any(word in lowered for word in self.DOCUMENT_KEYWORDS)
+        if any(word in lowered for word in self.SUMMARY_KEYWORDS) and not is_document_request:
             return PlannerDecision(
                 intent="summarization",
                 requires_retrieval=False,

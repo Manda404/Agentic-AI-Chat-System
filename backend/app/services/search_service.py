@@ -10,8 +10,15 @@ L'indexation (`bulk_index_documents`) attend des documents déjà enrichis d'un
 champ `embedding` par l'appelant (voir `ingest_router.py`), afin que la même
 collection serve aussi de source à `MongoVectorStore` pour la recherche
 vectorielle (Atlas Vector Search).
+
+`pymongo` est un driver SYNCHRONE : `aggregate()`/`insert_many()` bloquent le
+thread appelant le temps de l'aller-retour réseau. Comme ce service est
+utilisé depuis des méthodes `async def` (agents LangGraph, routes FastAPI),
+chaque appel bloquant est délégué à `asyncio.to_thread` pour ne jamais geler
+l'event loop pendant une requête Mongo.
 """
 
+import asyncio
 from typing import Any, Dict, List
 
 from app.config.settings import settings
@@ -55,7 +62,7 @@ class SearchService:
         """Expose la collection pymongo (réutilisée par `MongoVectorStore`, évite une 2e connexion)."""
         return self._collection
 
-    def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> int:
+    async def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> int:
         """Insère une liste de documents (déjà enrichis d'un champ `embedding` si besoin)."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
@@ -64,7 +71,7 @@ class SearchService:
         )
         if not documents:
             return 0
-        self._collection.insert_many(documents)
+        await asyncio.to_thread(self._collection.insert_many, documents)
         logger.bind(collection=self.index_name, document_count=len(documents)).info(
             "Bulk index completed."
         )
@@ -94,7 +101,7 @@ class SearchService:
                 {"$limit": 5},
                 {"$addFields": {"score": {"$meta": "searchScore"}}},
             ]
-            hits = list(self._collection.aggregate(pipeline))
+            hits = await asyncio.to_thread(lambda: list(self._collection.aggregate(pipeline)))
             logger.bind(collection=self.index_name, hits_count=len(hits)).info(
                 "MongoDB Atlas Search query completed."
             )
@@ -115,7 +122,23 @@ class SearchService:
             )
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
+    async def clear_documents(self) -> int:
+        """Supprime tous les documents de la collection sans supprimer ses index Atlas."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available.")
+        result = await asyncio.to_thread(self._collection.delete_many, {})
+        deleted_count = int(result.deleted_count)
+        logger.bind(collection=self.index_name, deleted_count=deleted_count).warning(
+            "MongoDB document collection reset completed."
+        )
+        return deleted_count
+
     @property
     def available(self) -> bool:
         """True si la connexion MongoDB Atlas a réussi au démarrage (utilisé par `/health`)."""
         return self._collection is not None
+
+    def close(self) -> None:
+        """Ferme le client MongoDB possédé par ce service."""
+        if self._client is not None:
+            self._client.close()

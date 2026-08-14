@@ -2,12 +2,13 @@
 
 Ce document explique en détail comment fonctionne le pipeline RAG (Retrieval-Augmented
 Generation) de ce projet, étage par étage, et liste les erreurs/limites identifiées
-dans le code actuel. Pour une vue d'ensemble plus courte, voir [`docs/RAG.md`](../../../docs/RAG.md).
+dans le code actuel. Pour une vue d'ensemble du reste du projet (agents, workflow,
+stack, sécurité), voir [`GUIDE_PROJET.md`](GUIDE_PROJET.md).
 
 ## Vue d'ensemble
 
 Le RAG n'est pas un seul agent : c'est une chaîne de 5 agents, chacun dans son
-propre fichier, orchestrés par `ChatWorkflow` ([`backend/app/workflows/chat_workflow.py`](../workflows/chat_workflow.py)) :
+propre fichier, orchestrés par `ChatWorkflow` ([`backend/app/workflows/chat_workflow.py`](../backend/app/workflows/chat_workflow.py)) :
 
 ```
 SearchAgent → HybridRetrieverAgent → RerankerAgent → ContextCompressionAgent → RAGAgent
@@ -20,13 +21,13 @@ une recherche documentaire (`requires_rag=True` dans `PlannerDecision`). Pour un
 salutation ou une question générale, le graphe saute directement vers `SummaryAgent`.
 
 Chaque étage lit et écrit dans un état partagé, `GraphState`
-([`backend/app/state/graph_state.py`](../state/graph_state.py)), qui traverse tout le graphe LangGraph.
+([`backend/app/state/graph_state.py`](../backend/app/state/graph_state.py)), qui traverse tout le graphe LangGraph.
 
 ---
 
 ## 1. SearchAgent — recherche full-text
 
-**Fichier :** [`search_agent.py`](search_agent.py) · **Dépend de :** [`SearchService`](../services/search_service.py)
+**Fichier :** [`search_agent.py`](../backend/app/agents/search_agent.py) · **Dépend de :** [`SearchService`](../backend/app/services/search_service.py)
 
 - Envoie `state.user_message` tel quel à MongoDB Atlas via `SearchService.search()`.
 - Requête d'agrégation `$search` (Atlas Search) en `compound`/`text` sur les champs
@@ -41,7 +42,7 @@ Chaque étage lit et écrit dans un état partagé, `GraphState`
 
 ## 2. HybridRetrieverAgent — fusion full-text + vectoriel
 
-**Fichier :** [`hybrid_retriever_agent.py`](hybrid_retriever_agent.py) · **Dépend de :** [`VectorStorePort`](../services/retrieval_ports.py)
+**Fichier :** [`hybrid_retriever_agent.py`](../backend/app/agents/hybrid_retriever_agent.py) · **Dépend de :** [`VectorStorePort`](../backend/app/services/retrieval_ports.py)
 
 - Fusionne les résultats full-text (MongoDB Atlas Search) avec ceux de la
   recherche vectorielle, via `MongoVectorStore` (implémentation de
@@ -59,7 +60,7 @@ Chaque étage lit et écrit dans un état partagé, `GraphState`
 
 ## 3. RerankerAgent — réordonnancement
 
-**Fichier :** [`reranker_agent.py`](reranker_agent.py) · **Dépend de :** [`EmbeddingService`](../services/retrieval_ports.py)
+**Fichier :** [`reranker_agent.py`](../backend/app/agents/reranker_agent.py) · **Dépend de :** [`EmbeddingService`](../backend/app/services/retrieval_ports.py)
 
 Combine deux scores par document :
 
@@ -83,7 +84,7 @@ Métriques : `retrieved_count`, `reranked_count`, `top_score`, `sources_used`,
 
 ## 4. ContextCompressionAgent — compression du contexte
 
-**Fichier :** [`context_compression_agent.py`](context_compression_agent.py)
+**Fichier :** [`context_compression_agent.py`](../backend/app/agents/context_compression_agent.py)
 
 - Prend `state.reranked_results`, garde titre/fichier/page pour la traçabilité,
   et tronque les snippets pour respecter `MAX_RAG_CONTEXT_CHARS` (4000 par défaut).
@@ -97,7 +98,7 @@ Métriques : `retrieved_count`, `reranked_count`, `top_score`, `sources_used`,
 
 ## 5. RAGAgent — génération de la réponse ancrée
 
-**Fichier :** [`rag_agent.py`](rag_agent.py)
+**Fichier :** [`rag_agent.py`](../backend/app/agents/rag_agent.py)
 
 - Utilise `state.reranked_results` (ou `search_results` en repli) comme source
   de vérité.
@@ -139,7 +140,7 @@ Classées par impact décroissant. Chacune référence le fichier et le
 mécanisme exact en cause.
 
 ### 1. `MAX_RAG_DOCUMENTS` n'a aucun effet sur le nombre de documents *récupérés* en full-text
-**Fichier :** [`search_service.py:94`](../services/search_service.py) (`$limit: 5` codé en dur dans le pipeline `$search`)
+**Fichier :** [`search_service.py:94`](../backend/app/services/search_service.py) (`$limit: 5` codé en dur dans le pipeline `$search`)
 
 `SearchService.search()` fixe `$limit: 5` sans lire `settings.max_rag_documents`.
 Résultat : même si vous configurez `MAX_RAG_DOCUMENTS=20`, la branche full-text
@@ -147,7 +148,7 @@ ne renverra jamais plus de 5 candidats. Le setting ne contrôle en pratique que
 la troncature *après* reranking, pas la profondeur de recherche full-text.
 
 ### 2. `HybridRetrieverAgent.limit=8` — ✅ résolu par la migration vers MongoDB Atlas
-**Fichier :** [`hybrid_retriever_agent.py:25`](hybrid_retriever_agent.py)
+**Fichier :** [`hybrid_retriever_agent.py:25`](../backend/app/agents/hybrid_retriever_agent.py)
 
 Avant la migration vers MongoDB Atlas, ce paramètre était inopérant : le
 full-text était plafonné à 5 (erreur #1) et le store vectoriel par défaut
@@ -160,7 +161,7 @@ troncature `[: self.limit]` s'applique réellement (vérifié en pratique :
 `full_text_count=5`, `vector_count=8`, `hybrid_count=8` sur une requête réelle).
 
 ### 3. Risque de collision de déduplication pour les documents issus de CSV
-**Fichiers :** [`hybrid_retriever_agent.py:66`](hybrid_retriever_agent.py) + [`csv_ingest.py`](../data_ingest/csv_ingest.py)
+**Fichiers :** [`hybrid_retriever_agent.py:66`](../backend/app/agents/hybrid_retriever_agent.py) + [`csv_ingest.py`](../backend/app/data_ingest/csv_ingest.py)
 
 La clé de dédup est `(titre, file_name ou source, page_number)`. Pour les
 PDF, `title` inclut le numéro de page (`"fichier - Page 3"`) donc pas de
@@ -173,7 +174,7 @@ lignes sera silencieusement supprimée par `_merge()`, même si leur contenu
 diffère.
 
 ### 4. `RAGAgent` rapporte un `sources_count` trompeur
-**Fichier :** [`rag_agent.py:67`](rag_agent.py)
+**Fichier :** [`rag_agent.py:67`](../backend/app/agents/rag_agent.py)
 
 `metadata["sources_count"] = len(state.search_results)` utilise le nombre de
 résultats *bruts* de recherche, pas `len(documents)` (= ce qui a réellement
@@ -182,7 +183,7 @@ documents, la métrique affichée au frontend/observabilité surestime le
 nombre de sources réellement utilisées pour ancrer la réponse.
 
 ### 5. Troncature "dure" du contexte compressé peut couper une citation en plein milieu
-**Fichier :** [`context_compression_agent.py:50`](context_compression_agent.py)
+**Fichier :** [`context_compression_agent.py:50`](../backend/app/agents/context_compression_agent.py)
 
 `state.compressed_context = compressed[: self.max_chars]` coupe la chaîne
 finale au caractère près, sans respecter les frontières de blocs. Si le
@@ -191,7 +192,7 @@ dernier document inclus dépasse tout juste la limite, son label
 reçoit alors un fragment de citation illisible pour ce dernier document.
 
 ### 6. Pondération du score sémantique non calibrée
-**Fichier :** [`reranker_agent.py`](reranker_agent.py) (`SEMANTIC_WEIGHT = 2.0`)
+**Fichier :** [`reranker_agent.py`](../backend/app/agents/reranker_agent.py) (`SEMANTIC_WEIGHT = 2.0`)
 
 Le score final additionne le score lexical (issu du score MongoDB Atlas Search,
 BM25 via Lucene, dont l'échelle dépend du corpus et peut dépasser largement 2)
@@ -206,7 +207,7 @@ mériterait d'être testée/calibrée sur des données réelles plutôt que fix�
 arbitrairement.
 
 ### 7. La compression de contexte est une troncature naïve, pas une sélection intelligente
-**Fichier :** [`context_compression_agent.py`](context_compression_agent.py) (`use_llm=False` par défaut, jamais activé dans `chat_workflow.py`)
+**Fichier :** [`context_compression_agent.py`](../backend/app/agents/context_compression_agent.py) (`use_llm=False` par défaut, jamais activé dans `chat_workflow.py`)
 
 `_local_compress` coupe chaque snippet à un budget de caractères sans
 comprendre le contenu. Si l'information pertinente pour répondre à la

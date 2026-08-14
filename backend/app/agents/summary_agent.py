@@ -52,7 +52,11 @@ class SummaryAgent:
             context_messages=len(state.conversation_context),
         ).info("Summary agent started.")
         # Réponse directe : pas de recherche documentaire, seulement le message + contexte court.
-        summary = await self.llm_service.summarize(state.user_message, state.conversation_context)
+        context = "\n".join(
+            f"{message.get('role', 'unknown')}: {message.get('content', '')}"
+            for message in state.conversation_context
+        )
+        summary = await self.llm_service.summarize(state.user_message, context)
         state.summary_output = summary
         state.draft_answer = summary
         logger.bind(context_messages=len(state.conversation_context)).info(

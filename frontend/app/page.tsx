@@ -1,6 +1,12 @@
 "use client";
 
-import type { ChangeEvent, CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  ChangeEvent,
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
@@ -23,7 +29,11 @@ import {
   RefreshCw,
   LogOut,
   Send,
-  Keyboard
+  Keyboard,
+  Sun,
+  Moon,
+  FileUp,
+  Trash2
 } from "lucide-react";
 
 type AgentResult = {
@@ -64,6 +74,10 @@ type AuthResponse = {
   email: string;
 };
 
+type SessionResponse = {
+  email: string;
+};
+
 type HealthResponse = {
   status: string;
   app: string;
@@ -84,19 +98,24 @@ type ActivityLog = {
 
 type ViewMode = "desktop" | "tablet" | "mobile";
 
+type ThemeMode = "dark" | "light";
+
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000";
 
 const TOKEN_STORAGE_KEY = "agentic-rag-platform-token";
 const EMAIL_STORAGE_KEY = "agentic-rag-platform-email";
+const THEME_STORAGE_KEY = "agentic-rag-platform-theme";
 
 const quickPrompts = [
   "How does LangGraph work?",
   "Explain Redis caching",
   "What is Langfuse observability?",
+  "Summarize the indexed documents",
+  "What are the key points in my documents?",
 ];
 
-const MAX_ACTIVITY_LOGS = 28;
+const MAX_ACTIVITY_LOGS = 100;
 
 export default function Home() {
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -117,8 +136,14 @@ export default function Home() {
   const [token, setToken] = useState("");
   const [loggedInEmail, setLoggedInEmail] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [sessionChecking, setSessionChecking] = useState(true);
   const [authMessage, setAuthMessage] = useState("Session offline.");
   const [ingestLoading, setIngestLoading] = useState(false);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState<File | null>(null);
+  const [isDraggingDocument, setIsDraggingDocument] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
@@ -126,6 +151,7 @@ export default function Home() {
   const [lastHealthCheck, setLastHealthCheck] = useState("");
   const [clock, setClock] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("desktop");
+  const [theme, setTheme] = useState<ThemeMode>("dark");
   const [leftPanelWidth, setLeftPanelWidth] = useState(250);
   const [rightPanelWidth, setRightPanelWidth] = useState(340);
   const resizeStateRef = useRef<{
@@ -143,14 +169,63 @@ export default function Home() {
   useEffect(() => {
     const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
     const storedEmail = window.localStorage.getItem(EMAIL_STORAGE_KEY) ?? "";
-    if (storedToken) {
-      setToken(storedToken);
-      setLoggedInEmail(storedEmail);
-      setAuthMessage(`Session live for ${storedEmail || "saved user"}.`);
-      appendLog("INFO", `Recovered saved session for ${storedEmail || "saved user"}.`);
-    } else {
+
+    if (!storedToken) {
       appendLog("WARN", "No saved session detected. Login required.");
+      setSessionChecking(false);
+      return;
     }
+
+    const controller = new AbortController();
+
+    async function validateSavedSession() {
+      setAuthMessage("Validating saved session...");
+
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/v1/auth/me`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${storedToken}`,
+          },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+            window.localStorage.removeItem(EMAIL_STORAGE_KEY);
+            setAuthMessage("Saved session expired. Please login again.");
+            appendLog("WARN", "Saved session rejected and removed.");
+            return;
+          }
+
+          throw new Error("Session validation service unavailable.");
+        }
+
+        const data: SessionResponse = await response.json();
+        setToken(storedToken);
+        setLoggedInEmail(data.email || storedEmail);
+        setAuthMessage(`Session live for ${data.email || storedEmail}.`);
+        appendLog("INFO", `Recovered validated session for ${data.email || storedEmail}.`);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+
+        const message =
+          error instanceof Error ? error.message : "Unable to validate saved session.";
+        setAuthMessage(`${message} Please login again or retry later.`);
+        appendLog("ERROR", message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setSessionChecking(false);
+        }
+      }
+    }
+
+    void validateSavedSession();
+
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -169,6 +244,29 @@ export default function Home() {
 
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    // Le script inline de layout.tsx a déjà posé data-theme sur <html> avant
+    // l'hydratation (anti-flash) ; on synchronise juste le state React dessus,
+    // puis on active les transitions douces (pas de transition sur le tout
+    // premier rendu, pour éviter un fondu visible au chargement de la page).
+    const initialTheme = (document.documentElement.getAttribute("data-theme") as ThemeMode | null) ?? "dark";
+    setTheme(initialTheme);
+    const raf = window.requestAnimationFrame(() => {
+      document.body.classList.add("theme-ready");
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+
+  function toggleTheme() {
+    setTheme((current) => {
+      const next: ThemeMode = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
+      appendLog("INFO", `Theme switched to ${next} mode.`);
+      return next;
+    });
+  }
 
   useEffect(() => {
     const updateViewMode = () => {
@@ -487,6 +585,179 @@ export default function Home() {
     }
   }
 
+  function prepareDocument(file: File | null, input?: HTMLInputElement) {
+    if (!file) {
+      setSelectedDocument(null);
+      return;
+    }
+
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (extension !== "pdf" && extension !== "csv") {
+      setSelectedDocument(null);
+      if (input) {
+        input.value = "";
+      }
+      setAuthMessage("Unsupported file. Choose a PDF or CSV document.");
+      appendLog("WARN", `Upload rejected: ${file.name} is not a PDF or CSV file.`);
+      return;
+    }
+
+    setSelectedDocument(file);
+    setAuthMessage(`${file.name} ready to upload.`);
+    appendLog("INFO", `Document selected: ${file.name}.`);
+  }
+
+  function selectDocument(event: ChangeEvent<HTMLInputElement>) {
+    prepareDocument(event.target.files?.[0] ?? null, event.target);
+  }
+
+  function handleDocumentDrag(event: ReactDragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (uploadLoading) {
+      return;
+    }
+    if (event.type === "dragenter" || event.type === "dragover") {
+      setIsDraggingDocument(true);
+    } else {
+      setIsDraggingDocument(false);
+    }
+  }
+
+  function dropDocument(event: ReactDragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingDocument(false);
+    if (uploadLoading) {
+      return;
+    }
+    prepareDocument(event.dataTransfer.files?.[0] ?? null);
+  }
+
+  async function uploadDocument() {
+    if (!token || !selectedDocument || uploadLoading) {
+      appendLog("WARN", "Upload skipped because no document is selected or the session is offline.");
+      return;
+    }
+
+    const documentToUpload = selectedDocument;
+    const formData = new FormData();
+    formData.append("file", documentToUpload);
+    setUploadLoading(true);
+    setAuthMessage(`Uploading ${documentToUpload.name}...`);
+    appendLog("INFO", `Document upload started: ${documentToUpload.name}.`);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/v1/ingest/upload`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (handleAuthError(errorText, response)) {
+          return;
+        }
+        throw new Error(errorText || "Document upload failed.");
+      }
+
+      const data = (await response.json()) as {
+        indexed_count: number;
+        index_name: string;
+        file_name: string;
+        file_type: string;
+        documents_processed: number;
+        stored_path: string;
+      };
+
+      setAuthMessage(
+        `${data.file_name}: saved in ${data.stored_path} and indexed into ${data.index_name}.`
+      );
+      appendLog(
+        "INFO",
+        `Upload completed: ${data.file_name} (${data.documents_processed} processed, ${data.indexed_count} indexed).`
+      );
+      setSelectedDocument(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      void fetchHealth("Post-upload health probe");
+    } catch (error) {
+      if (handleAuthError(error)) {
+        return;
+      }
+      const nextMessage = error instanceof Error ? error.message : "Document upload failed.";
+      setAuthMessage(nextMessage);
+      appendLog("ERROR", `Upload failure: ${nextMessage}`);
+    } finally {
+      setUploadLoading(false);
+    }
+  }
+
+  async function resetApplicationData() {
+    if (!token || resetLoading) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Delete every MongoDB document and clear Redis conversations/cache? User accounts will be preserved."
+    );
+    if (!confirmed) {
+      appendLog("WARN", "Data reset cancelled.");
+      return;
+    }
+
+    setResetLoading(true);
+    setAuthMessage("Resetting documents, conversations and cache...");
+    appendLog("WARN", "Application data reset started. User accounts are preserved.");
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/v1/data/reset`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        if (handleAuthError(errorText, response)) {
+          return;
+        }
+        throw new Error(errorText || "Data reset failed.");
+      }
+
+      const data = (await response.json()) as {
+        mongodb_documents_deleted: number;
+        redis_runtime_entries_deleted: number;
+        user_accounts_preserved: boolean;
+      };
+      setConversationId(null);
+      setLastResponse(null);
+      setMessages([{ role: "assistant", content: "Data reset complete. Ready for new documents." }]);
+      setAuthMessage(
+        `Reset complete: ${data.mongodb_documents_deleted} MongoDB documents deleted; user accounts preserved.`
+      );
+      appendLog(
+        "WARN",
+        `Reset completed: mongodb=${data.mongodb_documents_deleted}, redis=${data.redis_runtime_entries_deleted}, users=preserved.`
+      );
+      void fetchHealth("Post-reset health probe");
+    } catch (error) {
+      if (handleAuthError(error)) {
+        return;
+      }
+      const nextMessage = error instanceof Error ? error.message : "Data reset failed.";
+      setAuthMessage(nextMessage);
+      appendLog("ERROR", `Reset failure: ${nextMessage}`);
+    } finally {
+      setResetLoading(false);
+    }
+  }
+
   async function sendMessage(promptOverride?: string) {
     if (loading || !token) {
       appendLog("WARN", "Message send skipped because session is offline or request is already running.");
@@ -734,7 +1005,16 @@ export default function Home() {
 
   return (
     <main style={styles.page}>
-      {!isAuthenticated ? (
+      {sessionChecking ? (
+        <section style={styles.authShell}>
+          <div style={authFrameStyle}>
+            <div style={styles.authPanel}>
+              <div style={styles.sectionKicker}>session</div>
+              <div style={styles.authFooterText}>validating saved session...</div>
+            </div>
+          </div>
+        </section>
+      ) : !isAuthenticated ? (
         <section style={styles.authShell}>
           <div style={authFrameStyle}>
             <div style={authTopBarStyle}>
@@ -745,6 +1025,7 @@ export default function Home() {
               <div style={cornerMetaStyle}>
                 <span>{clock || "--:--:--"}</span>
                 <span>health: {healthError ? "offline" : "online"}</span>
+                <ThemeToggleButton theme={theme} onToggle={toggleTheme} />
               </div>
             </div>
 
@@ -947,24 +1228,104 @@ export default function Home() {
               </div>
 
               <div style={styles.actionColumn}>
+                <div style={styles.actionGroup}>
+                  <div style={styles.actionGroupLabel}>local document</div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.csv,application/pdf,text/csv"
+                    onChange={selectDocument}
+                    style={styles.hiddenFileInput}
+                    disabled={uploadLoading}
+                    aria-label="Choose a PDF or CSV document"
+                  />
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      if (!uploadLoading) {
+                        fileInputRef.current?.click();
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        if (!uploadLoading) {
+                          fileInputRef.current?.click();
+                        }
+                      }
+                    }}
+                    onDragEnter={handleDocumentDrag}
+                    onDragOver={handleDocumentDrag}
+                    onDragLeave={handleDocumentDrag}
+                    onDrop={dropDocument}
+                    style={{
+                      ...styles.documentDropZone,
+                      ...(isDraggingDocument ? styles.documentDropZoneActive : {}),
+                      ...(selectedDocument ? styles.documentDropZoneSelected : {}),
+                      ...(uploadLoading ? styles.disabledButton : {}),
+                    }}
+                    aria-label="Drop a PDF or CSV here, or click to choose a file"
+                    aria-disabled={uploadLoading}
+                  >
+                    <FileUp size={20} style={styles.dropZoneIcon} />
+                    <span style={styles.dropZoneTitle}>
+                      {isDraggingDocument
+                        ? "drop file here"
+                        : selectedDocument
+                          ? selectedDocument.name
+                          : "drag & drop PDF / CSV"}
+                    </span>
+                    <span style={styles.dropZoneHint}>
+                      {selectedDocument ? "ready to upload · click to replace" : "or click to browse"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void uploadDocument()}
+                    style={{
+                      ...styles.primaryButtonSquare,
+                      ...(!selectedDocument || uploadLoading ? styles.disabledButton : {}),
+                    }}
+                    disabled={!selectedDocument || uploadLoading}
+                  >
+                    {uploadLoading ? (
+                      <>
+                        <Clock size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
+                        uploading...
+                      </>
+                    ) : (
+                      <>
+                        <FileUp size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
+                        upload &amp; index
+                      </>
+                    )}
+                  </button>
+                </div>
+
                 <button
                   type="button"
                   onClick={ingestSampleData}
-                  style={styles.primaryButtonSquare}
+                  style={styles.secondaryButtonSquare}
                   disabled={ingestLoading}
                 >
                   {ingestLoading ? (
                     <>
                       <Clock size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
-                      indexing...
+                      indexing folder...
                     </>
                   ) : (
                     <>
                       <Download size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
-                      ingest data
+                      INGESTION DATA
                     </>
                   )}
                 </button>
+
+                <div style={styles.actionSeparator}>
+                  <span style={styles.actionSeparatorLabel}>session</span>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => void fetchHealth("Manual health refresh")}
@@ -983,13 +1344,34 @@ export default function Home() {
                     </>
                   )}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void resetApplicationData()}
+                  style={{
+                    ...styles.dangerButtonSquare,
+                    ...(resetLoading ? styles.disabledButton : {}),
+                  }}
+                  disabled={resetLoading}
+                >
+                  {resetLoading ? (
+                    <>
+                      <Clock size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
+                      resetting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
+                      reset data
+                    </>
+                  )}
+                </button>
                 <button type="button" onClick={logout} style={styles.secondaryButtonSquare}>
                   <LogOut size={14} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
                   logout
                 </button>
               </div>
 
-              <div style={styles.cornerInfo}>{authMessage}</div>
+              <div style={styles.sessionMessage}>{authMessage}</div>
             </div>
           </aside>
 
@@ -1017,6 +1399,7 @@ export default function Home() {
                   <FileText size={12} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
                   {lastResponse?.context_messages ?? 0}
                 </span>
+                <ThemeToggleButton theme={theme} onToggle={toggleTheme} />
               </div>
             </div>
 
@@ -1048,10 +1431,15 @@ export default function Home() {
                   <div style={styles.avatar}>AI</div>
                   <div style={messageBubbleBaseStyle("assistant")}>
                     <div style={styles.messageMeta}>assistant</div>
-                    <div style={styles.typingRow}>
-                      <span style={styles.typingDot} />
-                      <span style={styles.typingDot} />
-                      <span style={styles.typingDot} />
+                    <div
+                      style={styles.typingRow}
+                      role="status"
+                      aria-live="polite"
+                      aria-label="Assistant is thinking"
+                    >
+                      <span className="thinking-dot thinking-dot-1" style={styles.typingDot} />
+                      <span className="thinking-dot thinking-dot-2" style={styles.typingDot} />
+                      <span className="thinking-dot thinking-dot-3" style={styles.typingDot} />
                     </div>
                   </div>
                 </div>
@@ -1073,8 +1461,12 @@ export default function Home() {
                     <button
                       key={prompt}
                       type="button"
-                      onClick={() => setInput(prompt)}
-                      style={promptChipStyle}
+                      onClick={() => void sendMessage(prompt)}
+                      style={{
+                        ...promptChipStyle,
+                        ...(loading ? styles.disabledButton : {}),
+                      }}
+                      disabled={loading}
                     >
                       {prompt}
                     </button>
@@ -1138,28 +1530,34 @@ export default function Home() {
                     <FileText size={10} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
                     events
                   </div>
-                  {activityLogs.length ? (
-                    activityLogs.map((log) => (
-                      <div key={log.id} style={logLineStyle}>
-                        <span style={styles.logTime}>{log.time}</span>
-                        <span
-                          style={{
-                            ...styles.logLevel,
-                            ...(log.level === "ERROR"
-                              ? styles.logLevelError
-                              : log.level === "WARN"
-                                ? styles.logLevelWarn
-                                : styles.logLevelInfo),
-                          }}
-                        >
-                          {log.level}
-                        </span>
-                        <span style={styles.logMessage}>{log.message}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div style={styles.emptyText}>No events yet.</div>
-                  )}
+                  <div
+                    className="activity-events-scroll"
+                    style={styles.activityEventsScroll}
+                    data-testid="activity-events-scroll"
+                  >
+                    {activityLogs.length ? (
+                      activityLogs.map((log) => (
+                        <div key={log.id} style={logLineStyle}>
+                          <span style={styles.logTime}>{log.time}</span>
+                          <span
+                            style={{
+                              ...styles.logLevel,
+                              ...(log.level === "ERROR"
+                                ? styles.logLevelError
+                                : log.level === "WARN"
+                                  ? styles.logLevelWarn
+                                  : styles.logLevelInfo),
+                            }}
+                          >
+                            {log.level}
+                          </span>
+                          <span style={styles.logMessage}>{log.message}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div style={styles.emptyText}>No events yet.</div>
+                    )}
+                  </div>
                 </div>
 
                 <div style={styles.terminalBlock}>
@@ -1280,6 +1678,28 @@ export default function Home() {
   );
 }
 
+function ThemeToggleButton({
+  theme,
+  onToggle,
+}: {
+  theme: "dark" | "light";
+  onToggle: () => void;
+}) {
+  const isLight = theme === "light";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={isLight ? "Switch to night mode" : "Switch to day mode"}
+      aria-label={isLight ? "Switch to night mode" : "Switch to day mode"}
+      style={styles.themeToggle}
+    >
+      {isLight ? <Moon size={12} /> : <Sun size={12} />}
+      {isLight ? "night" : "day"}
+    </button>
+  );
+}
+
 function StatusDot({
   label,
   tone,
@@ -1360,48 +1780,111 @@ function TerminalLine({
 }
 
 function renderRichText(text: string) {
-  const lines = text.split("\n");
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
 
-  return (
-    <div style={styles.richTextContainer}>
-      {lines.map((line, index) => {
-        const trimmed = line.trim();
+  const takeContinuation = (index: number): { content: string; nextIndex: number } => {
+    let nextIndex = index + 1;
+    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+      nextIndex += 1;
+    }
+    if (nextIndex >= lines.length || /^```/.test(lines[nextIndex].trim())) {
+      return { content: "", nextIndex: index };
+    }
+    return { content: lines[nextIndex].trim(), nextIndex };
+  };
 
-        if (!trimmed) {
-          return <div key={`space-${index}`} style={styles.richSpacer} />;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (blocks.length && index < lines.length - 1) {
+        blocks.push(<div key={`space-${index}`} style={styles.richSpacer} />);
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const language = trimmed.slice(3).trim();
+      const codeLines: string[] = [];
+      let cursor = index + 1;
+      while (cursor < lines.length) {
+        const candidate = lines[cursor].trim();
+        if (candidate.startsWith("```") || candidate === "`") {
+          break;
         }
+        codeLines.push(lines[cursor]);
+        cursor += 1;
+      }
+      blocks.push(
+        <div key={`code-block-${index}`} style={styles.codeBlock}>
+          {language ? <div style={styles.codeLanguage}>{language}</div> : null}
+          <pre style={styles.codePre}>
+            <code>{codeLines.join("\n")}</code>
+          </pre>
+        </div>
+      );
+      index = cursor < lines.length ? cursor : lines.length - 1;
+      continue;
+    }
 
-        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-          return (
-            <div key={`bullet-${index}`} style={styles.richBulletRow}>
-              <span style={styles.richBullet}>▸</span>
-              <span>{trimmed.slice(2)}</span>
-            </div>
-          );
-        }
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push(
+        <div key={`heading-${index}`} style={styles.richHeading}>
+          {renderInlineFormatting(headingMatch[2])}
+        </div>
+      );
+      continue;
+    }
 
-        if (/^\d+\.\s/.test(trimmed)) {
-          const [marker, ...rest] = trimmed.split(" ");
-          return (
-            <div key={`number-${index}`} style={styles.richBulletRow}>
-              <span style={styles.richNumber}>{marker}</span>
-              <span>{rest.join(" ")}</span>
-            </div>
-          );
-        }
+    const numberMatch = trimmed.match(/^(\d+)\.\s*(.*)$/);
+    if (numberMatch) {
+      let content = numberMatch[2];
+      if (!content) {
+        const continuation = takeContinuation(index);
+        content = continuation.content;
+        index = continuation.nextIndex;
+      }
+      blocks.push(
+        <div key={`number-${index}`} style={styles.richBulletRow}>
+          <span style={styles.richNumber}>{numberMatch[1]}.</span>
+          <span>{renderInlineFormatting(content)}</span>
+        </div>
+      );
+      continue;
+    }
 
-        return (
-          <p key={`paragraph-${index}`} style={styles.richParagraph}>
-            {renderInlineFormatting(trimmed)}
-          </p>
-        );
-      })}
-    </div>
-  );
+    const bulletMatch = trimmed.match(/^([-*•▸])(?:\s+(.*)|\s*)$/);
+    if (bulletMatch) {
+      let content = bulletMatch[2] ?? "";
+      if (!content) {
+        const continuation = takeContinuation(index);
+        content = continuation.content;
+        index = continuation.nextIndex;
+      }
+      blocks.push(
+        <div key={`bullet-${index}`} style={styles.richBulletRow}>
+          <span style={styles.richBullet}>▸</span>
+          <span>{renderInlineFormatting(content)}</span>
+        </div>
+      );
+      continue;
+    }
+
+    blocks.push(
+      <p key={`paragraph-${index}`} style={styles.richParagraph}>
+        {renderInlineFormatting(trimmed)}
+      </p>
+    );
+  }
+
+  return <div style={styles.richTextContainer}>{blocks}</div>;
 }
 
 function renderInlineFormatting(text: string) {
-  const parts = text.split(/(`[^`]+`)/g);
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
 
   return parts.map((part, index) => {
     if (part.startsWith("`") && part.endsWith("`")) {
@@ -1409,6 +1892,14 @@ function renderInlineFormatting(text: string) {
         <code key={`code-${index}`} style={styles.inlineCode}>
           {part.slice(1, -1)}
         </code>
+      );
+    }
+
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={`strong-${index}`} style={styles.richStrong}>
+          {part.slice(2, -2)}
+        </strong>
       );
     }
 
@@ -1423,8 +1914,8 @@ const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: "100vh",
     background:
-      "radial-gradient(circle at top left, rgba(22, 163, 74, 0.12), transparent 28%), radial-gradient(circle at top right, rgba(74, 222, 128, 0.08), transparent 22%), #020403",
-    color: "#d1fae5",
+      "radial-gradient(circle at top left, var(--decor-a), transparent 28%), radial-gradient(circle at top right, var(--decor-b), transparent 22%), var(--bg-page)",
+    color: "var(--text-secondary)",
     fontFamily: monoFont,
     overflowX: "hidden",
   },
@@ -1437,11 +1928,11 @@ const styles: Record<string, CSSProperties> = {
   authFrame: {
     width: "100%",
     maxWidth: 1180,
-    border: "1px solid rgba(34, 197, 94, 0.18)",
-    background: "rgba(2, 8, 4, 0.92)",
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--surface-panel)",
     borderRadius: 22,
     padding: 22,
-    boxShadow: "0 0 0 1px rgba(34, 197, 94, 0.04), 0 24px 80px rgba(0, 0, 0, 0.5)",
+    boxShadow: "0 0 0 1px var(--ring-faint), 0 24px 80px var(--shadow-ambient)",
     display: "grid",
     gap: 20,
   },
@@ -1458,12 +1949,12 @@ const styles: Record<string, CSSProperties> = {
     gap: 16,
     alignItems: "center",
     fontSize: 11,
-    color: "#86efac",
+    color: "var(--text-label)",
     letterSpacing: "0.08em",
     textTransform: "lowercase",
   },
   monoBrand: {
-    color: "#22c55e",
+    color: "var(--accent-strong)",
     fontSize: 12,
     letterSpacing: "0.16em",
     textTransform: "uppercase",
@@ -1471,11 +1962,13 @@ const styles: Record<string, CSSProperties> = {
   cornerMeta: {
     display: "flex",
     gap: 16,
-    color: "#6ee7b7",
+    alignItems: "center",
+    color: "var(--text-tertiary)",
     fontSize: 11,
   },
   cornerMetaMobile: {
     flexDirection: "column",
+    alignItems: "flex-start",
     gap: 6,
   },
   authGrid: {
@@ -1494,7 +1987,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "8px 6px",
   },
   sectionKicker: {
-    color: "#4ade80",
+    color: "var(--accent)",
     fontSize: 11,
     letterSpacing: "0.14em",
     textTransform: "uppercase",
@@ -1503,7 +1996,7 @@ const styles: Record<string, CSSProperties> = {
     margin: 0,
     fontSize: 38,
     lineHeight: 1.05,
-    color: "#f0fdf4",
+    color: "var(--text-primary)",
     textTransform: "lowercase",
   },
   authTitleMobile: {
@@ -1513,7 +2006,7 @@ const styles: Record<string, CSSProperties> = {
     margin: 0,
     fontSize: 14,
     lineHeight: 1.9,
-    color: "#a7f3d0",
+    color: "var(--text-tertiary)",
     maxWidth: 620,
   },
   cornerCard: {
@@ -1522,8 +2015,8 @@ const styles: Record<string, CSSProperties> = {
     padding: 14,
     maxWidth: 360,
     borderRadius: 16,
-    border: "1px solid rgba(34, 197, 94, 0.12)",
-    background: "rgba(3, 12, 6, 0.8)",
+    border: "1px solid var(--border-muted-soft)",
+    background: "var(--surface-card)",
   },
   quickInfoGrid: {
     display: "grid",
@@ -1537,26 +2030,26 @@ const styles: Record<string, CSSProperties> = {
   infoMiniCard: {
     borderRadius: 14,
     padding: 12,
-    border: "1px solid rgba(34, 197, 94, 0.1)",
-    background: "rgba(3, 12, 6, 0.74)",
+    border: "1px solid var(--border-muted-soft)",
+    background: "var(--surface-card)",
     display: "grid",
     gap: 8,
   },
   infoMiniLabel: {
-    color: "#86efac",
+    color: "var(--text-label)",
     fontSize: 10,
     textTransform: "uppercase",
     letterSpacing: "0.12em",
   },
   infoMiniValue: {
-    color: "#f0fdf4",
+    color: "var(--text-primary)",
     fontSize: 12,
     wordBreak: "break-word",
   },
   authPanel: {
     borderRadius: 18,
-    border: "1px solid rgba(34, 197, 94, 0.14)",
-    background: "rgba(3, 12, 6, 0.82)",
+    border: "1px solid var(--border-muted)",
+    background: "var(--surface-card)",
     padding: 18,
     display: "grid",
     gap: 14,
@@ -1569,33 +2062,33 @@ const styles: Record<string, CSSProperties> = {
   modeButton: {
     minHeight: 42,
     borderRadius: 12,
-    border: "1px solid rgba(34, 197, 94, 0.16)",
-    background: "rgba(2, 10, 4, 0.95)",
-    color: "#bbf7d0",
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--surface-control)",
+    color: "var(--text-label-soft)",
     fontFamily: monoFont,
     fontSize: 13,
     textTransform: "lowercase",
     cursor: "pointer",
   },
   modeButtonActive: {
-    background: "rgba(20, 83, 45, 0.86)",
-    color: "#f0fdf4",
-    boxShadow: "0 0 18px rgba(34, 197, 94, 0.16)",
+    background: "var(--surface-control-active)",
+    color: "var(--text-primary)",
+    boxShadow: "0 0 18px var(--border-muted-strong)",
   },
   fieldLabel: {
     display: "grid",
     gap: 8,
     fontSize: 12,
-    color: "#86efac",
+    color: "var(--text-label)",
     textTransform: "lowercase",
   },
   input: {
     width: "100%",
     minHeight: 46,
     borderRadius: 12,
-    border: "1px solid rgba(34, 197, 94, 0.16)",
-    background: "#031007",
-    color: "#ecfdf5",
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--bg-input)",
+    color: "var(--text-primary)",
     padding: "0 12px",
     boxSizing: "border-box",
     outline: "none",
@@ -1605,37 +2098,41 @@ const styles: Record<string, CSSProperties> = {
   primaryButton: {
     minHeight: 44,
     borderRadius: 8,
-    border: "1px solid rgba(74, 222, 128, 0.3)",
-    background: "linear-gradient(180deg, rgba(16, 72, 40, 0.98), rgba(18, 108, 54, 0.94))",
-    color: "#f0fdf4",
+    border: "1px solid var(--border-accent)",
+    background: "var(--gradient-accent-btn)",
+    color: "var(--text-primary)",
     fontFamily: monoFont,
     fontSize: 12,
     letterSpacing: "0.08em",
     textTransform: "uppercase",
     cursor: "pointer",
     padding: "0 14px",
-    boxShadow: "0 0 18px rgba(34, 197, 94, 0.1)",
+    boxShadow: "0 0 18px var(--accent-glow-soft)",
   },
   primaryButtonSquare: {
     minHeight: 44,
     borderRadius: 4,
-    border: "1px solid rgba(74, 222, 128, 0.32)",
-    background: "linear-gradient(180deg, rgba(8, 44, 24, 0.98), rgba(13, 84, 42, 0.96))",
-    color: "#f0fdf4",
+    border: "1px solid var(--border-accent)",
+    background: "var(--gradient-accent-btn-square)",
+    color: "var(--text-primary)",
     fontFamily: monoFont,
     fontSize: 12,
     letterSpacing: "0.1em",
     textTransform: "uppercase",
     cursor: "pointer",
     padding: "0 14px",
-    boxShadow: "inset 0 0 0 1px rgba(134, 239, 172, 0.06), 0 0 16px rgba(34, 197, 94, 0.1)",
+    boxShadow: "inset 0 0 0 1px var(--accent-inset-faint), 0 0 16px var(--accent-glow-soft)",
+  },
+  disabledButton: {
+    cursor: "not-allowed",
+    opacity: 0.45,
   },
   secondaryButton: {
     minHeight: 42,
     borderRadius: 8,
-    border: "1px solid rgba(34, 197, 94, 0.14)",
-    background: "rgba(2, 10, 4, 0.95)",
-    color: "#bbf7d0",
+    border: "1px solid var(--border-muted)",
+    background: "var(--surface-control)",
+    color: "var(--text-label-soft)",
     fontFamily: monoFont,
     fontSize: 12,
     textTransform: "lowercase",
@@ -1645,20 +2142,50 @@ const styles: Record<string, CSSProperties> = {
   secondaryButtonSquare: {
     minHeight: 42,
     borderRadius: 4,
-    border: "1px solid rgba(34, 197, 94, 0.18)",
-    background: "linear-gradient(180deg, rgba(1, 9, 4, 0.98), rgba(2, 14, 6, 0.96))",
-    color: "#bbf7d0",
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--gradient-panel-alt)",
+    color: "var(--text-label-soft)",
     fontFamily: monoFont,
     fontSize: 11,
     letterSpacing: "0.08em",
     textTransform: "uppercase",
     cursor: "pointer",
     padding: "0 14px",
-    boxShadow: "inset 0 0 0 1px rgba(34, 197, 94, 0.04)",
+    boxShadow: "inset 0 0 0 1px var(--ring-faint)",
+  },
+  dangerButtonSquare: {
+    minHeight: 42,
+    borderRadius: 4,
+    border: "1px solid var(--status-danger-strong)",
+    background: "transparent",
+    color: "var(--status-danger)",
+    fontFamily: monoFont,
+    fontSize: 11,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    cursor: "pointer",
+    padding: "0 14px",
+    boxShadow: "inset 0 0 14px var(--status-danger-glow)",
+  },
+  themeToggle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    minHeight: 26,
+    borderRadius: 999,
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--surface-control)",
+    color: "var(--text-label)",
+    fontFamily: monoFont,
+    fontSize: 10,
+    textTransform: "lowercase",
+    letterSpacing: "0.06em",
+    cursor: "pointer",
+    padding: "0 10px",
   },
   authFooterText: {
     fontSize: 12,
-    color: "#a7f3d0",
+    color: "var(--text-tertiary)",
     lineHeight: 1.7,
     minHeight: 20,
   },
@@ -1673,9 +2200,9 @@ const styles: Record<string, CSSProperties> = {
   hintChip: {
     padding: "9px 12px",
     borderRadius: 999,
-    border: "1px solid rgba(34, 197, 94, 0.1)",
-    background: "rgba(3, 12, 6, 0.7)",
-    color: "#86efac",
+    border: "1px solid var(--border-muted-soft)",
+    background: "var(--surface-card)",
+    color: "var(--text-label)",
     fontSize: 11,
     maxWidth: 340,
   },
@@ -1693,8 +2220,7 @@ const styles: Record<string, CSSProperties> = {
     padding: 14,
     boxSizing: "border-box",
     alignItems: "stretch",
-    background:
-      "linear-gradient(180deg, rgba(0, 8, 4, 0.96), rgba(0, 4, 2, 0.98))",
+    background: "var(--gradient-app-bg)",
   },
   appShellTablet: {
     height: "auto",
@@ -1723,22 +2249,20 @@ const styles: Record<string, CSSProperties> = {
   },
   railBox: {
     borderRadius: 0,
-    border: "1px solid rgba(0, 255, 102, 0.18)",
-    background:
-      "linear-gradient(180deg, rgba(0, 10, 4, 0.96), rgba(0, 5, 2, 0.98))",
+    border: "1px solid var(--border-neon)",
+    background: "var(--gradient-panel)",
     padding: 14,
     display: "grid",
     gap: 12,
-    boxShadow: "inset 0 0 0 1px rgba(0, 255, 102, 0.03), 0 0 24px rgba(0, 0, 0, 0.22)",
+    boxShadow: "inset 0 0 0 1px var(--glow-neon-faint), 0 0 24px var(--shadow-soft)",
   },
   resizeDivider: {
     width: 10,
     cursor: "col-resize",
     position: "relative",
-    background:
-      "linear-gradient(180deg, rgba(0, 255, 102, 0.08), rgba(0, 255, 102, 0.02))",
-    borderLeft: "1px solid rgba(0, 255, 102, 0.22)",
-    borderRight: "1px solid rgba(0, 255, 102, 0.14)",
+    background: "var(--gradient-resize-divider)",
+    borderLeft: "1px solid var(--border-neon-strong)",
+    borderRight: "1px solid var(--border-muted-strong)",
   },
   railHeader: {
     display: "flex",
@@ -1747,12 +2271,12 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "start",
   },
   railTitle: {
-    color: "#ecfdf5",
+    color: "var(--text-primary)",
     fontSize: 15,
     textTransform: "lowercase",
   },
   smallMono: {
-    color: "#4ade80",
+    color: "var(--accent)",
     fontSize: 11,
     textTransform: "uppercase",
     letterSpacing: "0.08em",
@@ -1769,12 +2293,12 @@ const styles: Record<string, CSSProperties> = {
   },
   metricKey: {
     fontSize: 13,
-    color: "#86efac",
+    color: "var(--text-label)",
     textTransform: "lowercase",
   },
   metricValue: {
     fontSize: 10,
-    color: "#9ca3af",
+    color: "var(--text-dim)",
     textAlign: "right",
     wordBreak: "break-word",
     maxWidth: 120,
@@ -1800,19 +2324,19 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-block",
   },
   statusDotOnline: {
-    background: "#4ade80",
-    boxShadow: "0 0 10px #22c55e, 0 0 18px rgba(34, 197, 94, 0.6)",
+    background: "var(--accent)",
+    boxShadow: "0 0 10px var(--accent-strong), 0 0 18px var(--accent-glow)",
   },
   statusDotOffline: {
-    background: "#f43f5e",
-    boxShadow: "0 0 10px #f43f5e, 0 0 18px rgba(244, 63, 94, 0.5)",
+    background: "var(--status-danger-strong)",
+    boxShadow: "0 0 10px var(--status-danger-strong), 0 0 18px var(--status-danger-glow)",
   },
   statusDotNeutral: {
-    background: "#facc15",
-    boxShadow: "0 0 10px #facc15, 0 0 18px rgba(250, 204, 21, 0.5)",
+    background: "var(--status-warning-strong)",
+    boxShadow: "0 0 10px var(--status-warning-strong), 0 0 18px var(--status-warning-glow)",
   },
   statusLabel: {
-    color: "#bbf7d0",
+    color: "var(--text-label-soft)",
     fontSize: 10,
     textTransform: "lowercase",
   },
@@ -1821,22 +2345,103 @@ const styles: Record<string, CSSProperties> = {
     textTransform: "lowercase",
   },
   statusValueOnline: {
-    color: "#4ade80",
+    color: "var(--accent)",
   },
   statusValueOffline: {
-    color: "#fb7185",
+    color: "var(--status-danger)",
   },
   statusValueNeutral: {
-    color: "#fde047",
+    color: "var(--status-warning)",
   },
   cornerInfo: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 9,
     lineHeight: 1.7,
   },
   actionColumn: {
     display: "grid",
-    gap: 10,
+    gap: 9,
+  },
+  actionGroup: {
+    display: "grid",
+    gap: 8,
+  },
+  actionGroupLabel: {
+    color: "var(--text-label)",
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+  },
+  actionSeparator: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 3,
+  },
+  actionSeparatorLabel: {
+    width: "100%",
+    borderTop: "1px solid var(--border-muted-soft)",
+    paddingTop: 7,
+    color: "var(--text-faint)",
+    fontSize: 8,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+  },
+  hiddenFileInput: {
+    display: "none",
+  },
+  documentDropZone: {
+    minWidth: 0,
+    minHeight: 104,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 7,
+    padding: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "var(--border-accent)",
+    background: "var(--bg-terminal-block)",
+    color: "var(--text-label)",
+    textAlign: "center",
+    cursor: "pointer",
+    outline: "none",
+  },
+  documentDropZoneActive: {
+    borderStyle: "solid",
+    borderColor: "var(--accent)",
+    background: "var(--surface-control-active)",
+    boxShadow: "inset 0 0 24px var(--accent-glow-soft), 0 0 16px var(--accent-glow-soft)",
+  },
+  documentDropZoneSelected: {
+    borderStyle: "solid",
+  },
+  dropZoneIcon: {
+    color: "var(--accent)",
+  },
+  dropZoneTitle: {
+    width: "100%",
+    color: "var(--text-label-soft)",
+    fontSize: 10,
+    fontWeight: 600,
+    lineHeight: 1.4,
+    wordBreak: "break-word",
+  },
+  dropZoneHint: {
+    color: "var(--text-faint)",
+    fontSize: 8,
+    lineHeight: 1.4,
+  },
+  sessionMessage: {
+    minHeight: 32,
+    paddingTop: 10,
+    borderTop: "1px solid var(--border-muted-soft)",
+    color: "var(--text-faint)",
+    fontSize: 9,
+    lineHeight: 1.65,
+    wordBreak: "break-word",
   },
   chatColumn: {
     display: "grid",
@@ -1847,10 +2452,9 @@ const styles: Record<string, CSSProperties> = {
     height: "calc(100vh - 28px)",
     maxHeight: "calc(100vh - 28px)",
     overflow: "hidden",
-    borderLeft: "1px solid rgba(0, 255, 102, 0.18)",
-    borderRight: "1px solid rgba(0, 255, 102, 0.18)",
-    background:
-      "radial-gradient(circle at top, rgba(0, 255, 102, 0.06), transparent 18%), linear-gradient(180deg, rgba(0, 7, 3, 0.98), rgba(0, 3, 1, 0.99))",
+    borderLeft: "1px solid var(--border-neon)",
+    borderRight: "1px solid var(--border-neon)",
+    background: "var(--gradient-chat-column)",
   },
   chatColumnTablet: {
     minHeight: 0,
@@ -1869,11 +2473,10 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
     padding: "12px 16px",
     borderRadius: 0,
-    borderBottom: "1px solid rgba(0, 255, 102, 0.18)",
-    background:
-      "linear-gradient(180deg, rgba(0, 12, 5, 0.98), rgba(0, 8, 4, 0.94))",
+    borderBottom: "1px solid var(--border-neon)",
+    background: "var(--gradient-top-strip)",
     fontSize: 11,
-    color: "#86efac",
+    color: "var(--text-label)",
   },
   topStripMobile: {
     flexDirection: "column",
@@ -1890,7 +2493,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 4,
   },
   stripMeta: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 10,
   },
   topStripRight: {
@@ -1910,10 +2513,8 @@ const styles: Record<string, CSSProperties> = {
     padding: 18,
     borderRadius: 0,
     border: "none",
-    background:
-      "linear-gradient(180deg, rgba(0, 7, 3, 0.95), rgba(0, 4, 2, 0.99))",
-    boxShadow:
-      "inset 0 0 0 1px rgba(0, 255, 102, 0.02), inset 0 0 60px rgba(0, 255, 102, 0.025)",
+    background: "var(--gradient-chat-window)",
+    boxShadow: "inset 0 0 0 1px var(--glow-neon-faint), inset 0 0 60px var(--glow-neon-faint)",
     display: "flex",
     flexDirection: "column",
     gap: 12,
@@ -1945,9 +2546,9 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 9,
     display: "grid",
     placeItems: "center",
-    background: "rgba(20, 83, 45, 0.82)",
-    border: "1px solid rgba(34, 197, 94, 0.12)",
-    color: "#f0fdf4",
+    background: "var(--surface-control-active)",
+    border: "1px solid var(--border-muted-soft)",
+    color: "var(--text-primary)",
     fontSize: 10,
     flexShrink: 0,
   },
@@ -1958,7 +2559,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 13,
     lineHeight: 1.75,
     wordBreak: "break-word",
-    boxShadow: "0 0 0 1px rgba(0, 255, 102, 0.05)",
+    boxShadow: "0 0 0 1px var(--glow-neon-soft)",
   },
   messageBubbleMobile: {
     maxWidth: "100%",
@@ -1966,21 +2567,21 @@ const styles: Record<string, CSSProperties> = {
     padding: 11,
   },
   userBubble: {
-    background: "linear-gradient(180deg, rgba(0, 84, 34, 0.72), rgba(0, 52, 22, 0.88))",
-    color: "#f0fdf4",
-    border: "1px solid rgba(0, 255, 102, 0.22)",
+    background: "var(--gradient-user-bubble)",
+    color: "var(--text-primary)",
+    border: "1px solid var(--border-neon-strong)",
     borderTopRightRadius: 2,
   },
   assistantBubble: {
-    background: "linear-gradient(180deg, rgba(0, 12, 5, 0.96), rgba(0, 7, 3, 0.98))",
-    color: "#d1fae5",
-    border: "1px solid rgba(0, 255, 102, 0.16)",
+    background: "var(--gradient-assistant-bubble)",
+    color: "var(--text-secondary)",
+    border: "1px solid var(--border-neon)",
     borderTopLeftRadius: 2,
   },
   messageMeta: {
     marginBottom: 6,
     fontSize: 9,
-    color: "#6b7280",
+    color: "var(--text-faint)",
     textTransform: "uppercase",
     letterSpacing: "0.08em",
   },
@@ -1995,6 +2596,17 @@ const styles: Record<string, CSSProperties> = {
     margin: 0,
     lineHeight: 1.8,
   },
+  richHeading: {
+    marginTop: 4,
+    color: "var(--text-primary)",
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.55,
+  },
+  richStrong: {
+    color: "var(--text-primary)",
+    fontWeight: 700,
+  },
   richSpacer: {
     height: 3,
   },
@@ -2005,33 +2617,62 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "start",
   },
   richBullet: {
-    color: "#4ade80",
+    color: "var(--accent)",
   },
   richNumber: {
-    color: "#4ade80",
+    color: "var(--accent)",
   },
   inlineCode: {
     display: "inline-block",
     padding: "2px 6px",
     borderRadius: 8,
-    border: "1px solid rgba(34, 197, 94, 0.12)",
-    background: "#031007",
-    color: "#86efac",
+    border: "1px solid var(--border-muted-soft)",
+    background: "var(--bg-input)",
+    color: "var(--text-label)",
     fontSize: 12,
     fontFamily: monoFont,
   },
+  codeBlock: {
+    minWidth: 0,
+    overflow: "hidden",
+    borderRadius: 6,
+    border: "1px solid var(--border-muted-strong)",
+    background: "var(--bg-input)",
+  },
+  codeLanguage: {
+    padding: "6px 10px",
+    borderBottom: "1px solid var(--border-muted-soft)",
+    color: "var(--text-faint)",
+    fontSize: 9,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+  },
+  codePre: {
+    margin: 0,
+    padding: 12,
+    overflowX: "auto",
+    color: "var(--text-label-soft)",
+    fontFamily: monoFont,
+    fontSize: 11,
+    lineHeight: 1.65,
+    whiteSpace: "pre",
+    tabSize: 2,
+  },
   typingRow: {
     display: "flex",
-    gap: 8,
+    gap: 7,
     alignItems: "center",
-    minHeight: 14,
+    minHeight: 22,
+    padding: "3px 1px",
   },
   typingDot: {
-    width: 6,
-    height: 6,
+    width: 7,
+    height: 7,
     borderRadius: "50%",
-    background: "#4ade80",
-    boxShadow: "0 0 10px rgba(34, 197, 94, 0.55)",
+    display: "inline-block",
+    background: "var(--accent)",
+    boxShadow: "0 0 10px var(--accent-glow)",
+    transformOrigin: "center bottom",
   },
   promptDock: {
     display: "grid",
@@ -2042,10 +2683,9 @@ const styles: Record<string, CSSProperties> = {
     position: "sticky",
     bottom: 0,
     padding: "10px 14px 14px",
-    borderTop: "1px solid rgba(0, 255, 102, 0.18)",
-    background:
-      "linear-gradient(180deg, rgba(0, 10, 4, 0.96), rgba(0, 5, 2, 0.99))",
-    boxShadow: "0 -18px 44px rgba(0, 0, 0, 0.34)",
+    borderTop: "1px solid var(--border-neon)",
+    background: "var(--gradient-panel)",
+    boxShadow: "0 -18px 44px var(--shadow-strong)",
   },
   promptDockHeader: {
     display: "flex",
@@ -2054,13 +2694,13 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
   },
   promptDockTitle: {
-    color: "#00ff66",
+    color: "var(--accent)",
     fontSize: 11,
     textTransform: "uppercase",
     letterSpacing: "0.14em",
   },
   promptDockMeta: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 9,
   },
   promptScrollArea: {
@@ -2085,16 +2725,16 @@ const styles: Record<string, CSSProperties> = {
   },
   promptChip: {
     borderRadius: 4,
-    border: "1px solid rgba(0, 255, 102, 0.18)",
-    background: "linear-gradient(180deg, rgba(0, 16, 7, 0.96), rgba(0, 10, 4, 0.98))",
-    color: "#86efac",
+    border: "1px solid var(--border-neon)",
+    background: "var(--gradient-prompt-chip)",
+    color: "var(--text-label)",
     fontFamily: monoFont,
     fontSize: 11,
     padding: "8px 11px",
     cursor: "pointer",
     textAlign: "left",
     whiteSpace: "nowrap",
-    boxShadow: "0 0 0 1px rgba(0, 255, 102, 0.03)",
+    boxShadow: "0 0 0 1px var(--glow-neon-faint)",
   },
   promptChipMobile: {
     width: "100%",
@@ -2102,12 +2742,12 @@ const styles: Record<string, CSSProperties> = {
   },
   composer: {
     borderRadius: 6,
-    border: "1px solid rgba(0, 255, 102, 0.18)",
-    background: "linear-gradient(180deg, rgba(0, 11, 5, 0.98), rgba(0, 7, 3, 0.99))",
+    border: "1px solid var(--border-neon)",
+    background: "var(--gradient-composer)",
     padding: 10,
     display: "grid",
     gap: 8,
-    boxShadow: "0 10px 22px rgba(0, 0, 0, 0.18)",
+    boxShadow: "0 10px 22px var(--shadow-soft)",
   },
   composerAuthenticated: {
     maxWidth: "100%",
@@ -2122,9 +2762,9 @@ const styles: Record<string, CSSProperties> = {
     resize: "none",
     overflowY: "auto",
     borderRadius: 12,
-    border: "1px solid rgba(34, 197, 94, 0.12)",
-    background: "#031007",
-    color: "#ecfdf5",
+    border: "1px solid var(--border-muted-soft)",
+    background: "var(--bg-input)",
+    color: "var(--text-primary)",
     fontFamily: monoFont,
     fontSize: 12,
     lineHeight: 1.6,
@@ -2147,7 +2787,7 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "stretch",
   },
   composerHint: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 9,
   },
   composerHintMobile: {
@@ -2169,12 +2809,12 @@ const styles: Record<string, CSSProperties> = {
     minHeight: "calc(100vh - 28px)",
     maxHeight: "calc(100vh - 28px)",
     borderRadius: 0,
-    border: "1px solid rgba(0, 255, 102, 0.18)",
-    background: "linear-gradient(180deg, rgba(0, 9, 4, 0.98), rgba(0, 4, 2, 0.99))",
+    border: "1px solid var(--border-neon)",
+    background: "var(--gradient-terminal-card)",
     display: "grid",
     gridTemplateRows: "auto 1fr",
     overflow: "hidden",
-    boxShadow: "0 14px 34px rgba(0, 0, 0, 0.26)",
+    boxShadow: "0 14px 34px var(--shadow-medium)",
   },
   terminalCardTablet: {
     minHeight: 420,
@@ -2190,10 +2830,10 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
     alignItems: "center",
     padding: "14px 16px",
-    borderBottom: "1px solid rgba(34, 197, 94, 0.1)",
+    borderBottom: "1px solid var(--border-muted-soft)",
   },
   terminalTitle: {
-    color: "#4ade80",
+    color: "var(--accent)",
     fontSize: 12,
     letterSpacing: "0.08em",
     textTransform: "uppercase",
@@ -2214,18 +2854,29 @@ const styles: Record<string, CSSProperties> = {
   },
   terminalBlock: {
     borderRadius: 14,
-    border: "1px solid rgba(34, 197, 94, 0.08)",
-    background: "rgba(2, 10, 4, 0.72)",
+    border: "1px solid var(--border-terminal)",
+    background: "var(--bg-terminal-block)",
     padding: 12,
     display: "grid",
     gap: 10,
   },
   terminalBlockTitle: {
-    color: "#86efac",
+    color: "var(--text-label)",
     fontSize: 10,
     letterSpacing: "0.1em",
     textTransform: "uppercase",
     fontWeight: 600,
+  },
+  activityEventsScroll: {
+    maxHeight: 240,
+    minHeight: 70,
+    overflowY: "scroll",
+    overscrollBehavior: "contain",
+    paddingRight: 7,
+    display: "grid",
+    alignContent: "start",
+    gap: 10,
+    scrollbarGutter: "stable",
   },
   logLine: {
     display: "grid",
@@ -2240,7 +2891,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 2,
   },
   logTime: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 9,
   },
   logLevel: {
@@ -2249,16 +2900,16 @@ const styles: Record<string, CSSProperties> = {
     textTransform: "uppercase",
   },
   logLevelInfo: {
-    color: "#4ade80",
+    color: "var(--accent)",
   },
   logLevelWarn: {
-    color: "#fde047",
+    color: "var(--status-warning)",
   },
   logLevelError: {
-    color: "#fb7185",
+    color: "var(--status-danger)",
   },
   logMessage: {
-    color: "#d1fae5",
+    color: "var(--text-secondary)",
     wordBreak: "break-word",
   },
   terminalLine: {
@@ -2274,18 +2925,18 @@ const styles: Record<string, CSSProperties> = {
     gap: 2,
   },
   terminalKey: {
-    color: "#86efac",
+    color: "var(--text-label)",
     fontSize: 11,
   },
   terminalValue: {
-    color: "#9ca3af",
+    color: "var(--text-dim)",
     wordBreak: "break-word",
     fontSize: 10,
   },
   agentOutputCard: {
     borderRadius: 12,
-    border: "1px solid rgba(34, 197, 94, 0.08)",
-    background: "#031007",
+    border: "1px solid var(--border-terminal)",
+    background: "var(--bg-input)",
     padding: 10,
     display: "grid",
     gap: 8,
@@ -2295,19 +2946,19 @@ const styles: Record<string, CSSProperties> = {
     justifyContent: "space-between",
     gap: 10,
     alignItems: "center",
-    color: "#bbf7d0",
+    color: "var(--text-label-soft)",
     fontSize: 10,
   },
   pre: {
     margin: 0,
     whiteSpace: "pre-wrap",
-    color: "#9ca3af",
+    color: "var(--text-dim)",
     fontSize: 10,
     lineHeight: 1.6,
     fontFamily: monoFont,
   },
   emptyText: {
-    color: "#6b7280",
+    color: "var(--text-faint)",
     fontSize: 10,
   },
 };

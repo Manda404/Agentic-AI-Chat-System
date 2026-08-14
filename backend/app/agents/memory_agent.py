@@ -28,7 +28,7 @@ class MemoryAgent:
         1. historique transmis par le frontend dans `ChatRequest.history` ;
         2. historique stocké en Redis pour `conversation_id`.
         """
-        stored_context = self.memory_service.get_messages(state.conversation_id)
+        stored_context = await self.memory_service.get_messages(state.conversation_id)
         request_context = [message.model_dump() for message in state.history]
         # Le frontend reste prioritaire pour conserver la compatibilité avec l'UI actuelle.
         state.conversation_context = request_context or stored_context

@@ -119,13 +119,11 @@ http://localhost:3000
 
 Pour aller plus loin :
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Agents](docs/AGENTS.md)
-- [RAG](docs/RAG.md)
-- [RAG — détail du pipeline et limites connues](backend/app/agents/RAG_SYSTEM.md)
-- [Evaluation](docs/EVALUATION.md)
-- [Production Readiness](docs/PRODUCTION_READINESS.md)
-- [État de l’art](ETAT_DE_L_ART.md)
+- [Fonctionnement, pas à pas](docs/FONCTIONNEMENT.md) — comment marche le projet, du démarrage à la réponse, étape par étape.
+- [Guide du projet](docs/GUIDE_PROJET.md) — architecture, stack, workflow, sécurité, limites connues, roadmap.
+- [Agents](docs/AGENTS.md) — rôle et fonctionnement détaillé de chaque agent.
+- [RAG — détail du pipeline et limites connues](docs/RAG_SYSTEM.md)
+- [Évaluation](docs/EVALUATION.md)
 
 ## Positionnement
 

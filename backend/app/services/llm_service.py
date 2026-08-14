@@ -17,7 +17,7 @@ décorateur transparent qui ne change rien au comportement.
 import json
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from enum import Enum
-from openai import OpenAI
+from openai import AsyncOpenAI
 from app.prompts import LLMPrompts
 from app.config.settings import settings
 from app.logger import logger
@@ -98,14 +98,22 @@ class LLMService:
         self._initialize_client()
         
     def _initialize_client(self):
-        """Crée le client OpenAI pointé vers le HuggingFace Router (si une clé API est configurée)."""
+        """Crée le client OpenAI asynchrone pointé vers le HuggingFace Router (si une clé API est configurée).
+
+        Le client OFFICIEL asynchrone (`AsyncOpenAI`) est utilisé plutôt que
+        `OpenAI` : `generate()` est une méthode `async def` appelée depuis des
+        agents async eux-mêmes appelés par LangGraph — un client synchrone
+        bloquerait l'event loop pendant tout l'appel HTTP (jusqu'à
+        `LLM_TIMEOUT_SECONDS`), gelant toutes les autres requêtes en cours
+        sur le même worker.
+        """
 
         if not settings.huggingface_api_key:
             logger.warning("HuggingFace API key not configured")
             return
-        
-        # Initialize standard OpenAI client
-        self.client = OpenAI(
+
+        # Initialize async OpenAI client (ne bloque pas l'event loop)
+        self.client = AsyncOpenAI(
             base_url="https://router.huggingface.co/v1",
             api_key=settings.huggingface_api_key,
             timeout=settings.llm_timeout_seconds,
@@ -185,7 +193,7 @@ class LLMService:
         )
         
         try:
-          completion = self.client.chat.completions.create(
+          completion = await self.client.chat.completions.create(
                 model=model,
                 messages=[
                     {
@@ -323,10 +331,7 @@ class LLMService:
 
     async def rerank_with_llm(self, user_message: str, documents: str) -> str:
         """Point d'extension pour un futur reranking LLM/cross-encoder."""
-        prompt = (
-            "Rank these documents for the user question. Return the best source labels only.\n\n"
-            f"Question:\n{user_message}\n\nDocuments:\n{documents}"
-        )
+        prompt = LLMPrompts.rerank(user_message=user_message, documents=documents)
         return await self.generate(
             prompt=prompt,
             capability=ModelCapability.REASONING,

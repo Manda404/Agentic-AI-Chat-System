@@ -1,0 +1,224 @@
+/*
+ * Palette de thème (nuit = défaut, jour = [data-theme="light"]).
+ *
+ * L'app utilise des styles React inline (`CSSProperties`) qui référencent
+ * ces variables via `var(--token)` plutôt que des couleurs codées en dur,
+ * pour que la bascule jour/nuit change tout instantanément sans re-render.
+ *
+ * Deux familles de vert distinctes, volontairement gardées séparées :
+ * - "muted"  (rgba 34,197,94 à l'origine) : bordures/halos discrets.
+ * - "neon"   (rgba 0,255,102 à l'origine)  : bordures/halos "terminal CRT"
+ *   des panneaux principaux de l'app authentifiée.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg-page: #020403;
+  --decor-a: rgba(22, 163, 74, 0.12);
+  --decor-b: rgba(74, 222, 128, 0.08);
+
+  --surface-panel: rgba(2, 8, 4, 0.92);
+  --surface-card: rgba(3, 12, 6, 0.8);
+  --surface-control: rgba(2, 10, 4, 0.95);
+  --surface-control-active: rgba(20, 83, 45, 0.86);
+  --bg-input: #031007;
+  --bg-terminal-block: rgba(2, 10, 4, 0.72);
+
+  --gradient-app-bg: linear-gradient(180deg, rgba(0, 8, 4, 0.96), rgba(0, 4, 2, 0.98));
+  --gradient-panel: linear-gradient(180deg, rgba(0, 10, 4, 0.96), rgba(0, 5, 2, 0.98));
+  --gradient-panel-alt: linear-gradient(180deg, rgba(1, 9, 4, 0.98), rgba(2, 14, 6, 0.96));
+  --gradient-chat-column: radial-gradient(circle at top, rgba(0, 255, 102, 0.06), transparent 18%),
+    linear-gradient(180deg, rgba(0, 7, 3, 0.98), rgba(0, 3, 1, 0.99));
+  --gradient-top-strip: linear-gradient(180deg, rgba(0, 12, 5, 0.98), rgba(0, 8, 4, 0.94));
+  --gradient-chat-window: linear-gradient(180deg, rgba(0, 7, 3, 0.95), rgba(0, 4, 2, 0.99));
+  --gradient-terminal-card: linear-gradient(180deg, rgba(0, 9, 4, 0.98), rgba(0, 4, 2, 0.99));
+  --gradient-prompt-chip: linear-gradient(180deg, rgba(0, 16, 7, 0.96), rgba(0, 10, 4, 0.98));
+  --gradient-composer: linear-gradient(180deg, rgba(0, 11, 5, 0.98), rgba(0, 7, 3, 0.99));
+  --gradient-user-bubble: linear-gradient(180deg, rgba(0, 84, 34, 0.72), rgba(0, 52, 22, 0.88));
+  --gradient-assistant-bubble: linear-gradient(180deg, rgba(0, 12, 5, 0.96), rgba(0, 7, 3, 0.98));
+  --gradient-accent-btn: linear-gradient(180deg, rgba(16, 72, 40, 0.98), rgba(18, 108, 54, 0.94));
+  --gradient-accent-btn-square: linear-gradient(180deg, rgba(8, 44, 24, 0.98), rgba(13, 84, 42, 0.96));
+  --gradient-resize-divider: linear-gradient(180deg, rgba(0, 255, 102, 0.08), rgba(0, 255, 102, 0.02));
+
+  --border-muted-soft: rgba(34, 197, 94, 0.1);
+  --border-muted: rgba(34, 197, 94, 0.14);
+  --border-muted-strong: rgba(34, 197, 94, 0.18);
+  --border-accent: rgba(74, 222, 128, 0.3);
+  --border-neon: rgba(0, 255, 102, 0.18);
+  --border-neon-strong: rgba(0, 255, 102, 0.22);
+
+  --text-primary: #f0fdf4;
+  --text-secondary: #d1fae5;
+  --text-tertiary: #a7f3d0;
+  --text-label: #86efac;
+  --text-label-soft: #bbf7d0;
+  --text-faint: #6b7280;
+  --text-dim: #9ca3af;
+
+  --accent: #4ade80;
+  --accent-strong: #22c55e;
+  --accent-glow: rgba(34, 197, 94, 0.6);
+  --accent-glow-soft: rgba(34, 197, 94, 0.1);
+  --accent-inset-faint: rgba(134, 239, 172, 0.06);
+
+  --status-danger: #fb7185;
+  --status-danger-strong: #f43f5e;
+  --status-danger-glow: rgba(244, 63, 94, 0.5);
+
+  --status-warning: #fde047;
+  --status-warning-strong: #facc15;
+  --status-warning-glow: rgba(250, 204, 21, 0.5);
+
+  --shadow-ambient: rgba(0, 0, 0, 0.5);
+  --shadow-soft: rgba(0, 0, 0, 0.18);
+  --shadow-medium: rgba(0, 0, 0, 0.26);
+  --shadow-strong: rgba(0, 0, 0, 0.34);
+  --glow-neon-faint: rgba(0, 255, 102, 0.025);
+  --glow-neon-soft: rgba(0, 255, 102, 0.05);
+  --glow-neon-medium: rgba(0, 255, 102, 0.1);
+  --ring-faint: rgba(34, 197, 94, 0.04);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-page: #f2f8f4;
+  --decor-a: rgba(22, 163, 74, 0.07);
+  --decor-b: rgba(21, 128, 61, 0.05);
+
+  --surface-panel: rgba(255, 255, 255, 0.92);
+  --surface-card: rgba(240, 250, 244, 0.92);
+  --surface-control: #ffffff;
+  --surface-control-active: rgba(187, 247, 208, 0.85);
+  --bg-input: #ffffff;
+  --bg-terminal-block: rgba(236, 247, 240, 0.85);
+
+  --gradient-app-bg: linear-gradient(180deg, #eef6f1, #e3f0e8);
+  --gradient-panel: linear-gradient(180deg, #ffffff, #eef6f1);
+  --gradient-panel-alt: linear-gradient(180deg, #ffffff, #eef6f1);
+  --gradient-chat-column: radial-gradient(circle at top, rgba(22, 163, 74, 0.05), transparent 18%),
+    linear-gradient(180deg, #ffffff, #f3faf6);
+  --gradient-top-strip: linear-gradient(180deg, #ffffff, #f3faf6);
+  --gradient-chat-window: linear-gradient(180deg, #fbfdfc, #f3faf6);
+  --gradient-terminal-card: linear-gradient(180deg, #ffffff, #f3faf6);
+  --gradient-prompt-chip: linear-gradient(180deg, #ffffff, #eef6f1);
+  --gradient-composer: linear-gradient(180deg, #ffffff, #f3faf6);
+  --gradient-user-bubble: linear-gradient(180deg, #bbf7d0, #86efac);
+  --gradient-assistant-bubble: linear-gradient(180deg, #ffffff, #eef6f1);
+  --gradient-accent-btn: linear-gradient(180deg, #22c55e, #16a34a);
+  --gradient-accent-btn-square: linear-gradient(180deg, #22c55e, #15803d);
+  --gradient-resize-divider: linear-gradient(180deg, rgba(22, 163, 74, 0.14), rgba(22, 163, 74, 0.04));
+
+  --border-muted-soft: rgba(22, 101, 52, 0.1);
+  --border-muted: rgba(22, 101, 52, 0.16);
+  --border-muted-strong: rgba(22, 101, 52, 0.22);
+  --border-accent: rgba(21, 128, 61, 0.35);
+  --border-neon: rgba(22, 163, 74, 0.28);
+  --border-neon-strong: rgba(21, 128, 61, 0.35);
+
+  --text-primary: #052e16;
+  --text-secondary: #14532d;
+  --text-tertiary: #166534;
+  --text-label: #15803d;
+  --text-label-soft: #166534;
+  --text-faint: #6b7280;
+  --text-dim: #4b5563;
+
+  --accent: #16a34a;
+  --accent-strong: #15803d;
+  --accent-glow: rgba(22, 163, 74, 0.35);
+  --accent-glow-soft: rgba(22, 163, 74, 0.12);
+  --accent-inset-faint: rgba(21, 128, 61, 0.06);
+
+  --status-danger: #e11d48;
+  --status-danger-strong: #be123c;
+  --status-danger-glow: rgba(190, 18, 60, 0.3);
+
+  --status-warning: #b45309;
+  --status-warning-strong: #92400e;
+  --status-warning-glow: rgba(180, 83, 9, 0.28);
+
+  --shadow-ambient: rgba(15, 23, 42, 0.14);
+  --shadow-soft: rgba(15, 23, 42, 0.05);
+  --shadow-medium: rgba(15, 23, 42, 0.07);
+  --shadow-strong: rgba(15, 23, 42, 0.1);
+  --glow-neon-faint: rgba(22, 163, 74, 0.02);
+  --glow-neon-soft: rgba(22, 163, 74, 0.05);
+  --glow-neon-medium: rgba(22, 163, 74, 0.08);
+  --ring-faint: rgba(21, 128, 61, 0.04);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-page);
+}
+
+/* Transition douce lors du basculement jour/nuit, sans l'appliquer au premier rendu. */
+body.theme-ready,
+body.theme-ready * {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.activity-events-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-strong) var(--bg-input);
+}
+
+.activity-events-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.activity-events-scroll::-webkit-scrollbar-track {
+  background: var(--bg-input);
+  border-left: 1px solid var(--border-muted-soft);
+}
+
+.activity-events-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent-strong);
+  border: 2px solid var(--bg-input);
+  border-radius: 999px;
+}
+
+@keyframes thinking-dot-hop {
+  0%,
+  60%,
+  100% {
+    opacity: 0.45;
+    transform: translateY(0) scale(0.78);
+    box-shadow: 0 0 4px var(--accent-glow-soft);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-7px) scale(1.18);
+    box-shadow: 0 4px 14px var(--accent-glow);
+  }
+}
+
+.thinking-dot {
+  animation: thinking-dot-hop 1.05s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform, opacity;
+}
+
+.thinking-dot-2 {
+  animation-delay: 0.14s;
+}
+
+.thinking-dot-3 {
+  animation-delay: 0.28s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dot {
+    animation: none;
+    opacity: 0.75;
+    transform: none;
+  }
+}
