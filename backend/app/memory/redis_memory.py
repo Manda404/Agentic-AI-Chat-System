@@ -28,6 +28,7 @@ visible dans les logs plutôt que silencieux.
 
 import json
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 from app.logger import logger
 
@@ -61,15 +62,33 @@ class RedisMemoryService:
             redis_asyncio_module = importlib.import_module("redis.asyncio")
             self._client = redis_asyncio_module.from_url(url, decode_responses=True)
             self._available = True
-            logger.bind(redis_url=url, ttl_seconds=ttl_seconds).info(
+            logger.bind(redis_endpoint=self._safe_endpoint(url), ttl_seconds=ttl_seconds).info(
                 "Redis connection established."
             )
         except Exception as exc:
             self._client = None
             self._available = False
-            logger.bind(redis_url=url, reason=str(exc)).warning(
+            logger.bind(redis_endpoint=self._safe_endpoint(url), reason=str(exc)).warning(
                 "Redis unavailable, falling back to in-memory storage."
             )
+
+    @staticmethod
+    def _safe_endpoint(url: str) -> str:
+        """Retourne un endpoint utile au diagnostic sans identifiants ni paramètres."""
+        try:
+            parsed = urlsplit(url)
+            if not parsed.scheme or not parsed.hostname:
+                return "configured"
+            host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+            port = f":{parsed.port}" if parsed.port is not None else ""
+            return f"{parsed.scheme}://{host}{port}{parsed.path}"
+        except (TypeError, ValueError):
+            return "configured"
+
+    async def close(self) -> None:
+        """Ferme le pool asynchrone Redis, s'il a été créé."""
+        if self._client is not None:
+            await self._client.aclose()
 
     def conversation_key(self, conversation_id: str) -> str:
         """Clé Redis pour la liste des messages d'une conversation."""
@@ -118,6 +137,30 @@ class RedisMemoryService:
                     "Redis delete failed, clearing in-memory store instead."
                 )
         self._memory_store.pop(conversation_id, None)
+
+    async def clear_runtime_data(self) -> int:
+        """Supprime conversations et cache de chat, sans toucher aux comptes `user:*`."""
+        deleted = 0
+        if self._client:
+            try:
+                keys: list[str] = []
+                for pattern in ("conversation:*:messages", "chat:*"):
+                    async for key in self._client.scan_iter(match=pattern):
+                        keys.append(key)
+                if keys:
+                    deleted = int(await self._client.delete(*keys))
+            except Exception as exc:
+                logger.bind(reason=str(exc)).warning(
+                    "Redis runtime reset failed; clearing local runtime data only."
+                )
+
+        deleted += sum(len(messages) for messages in self._memory_store.values())
+        deleted += sum(1 for key in self._kv_store if key.startswith("chat:"))
+        self._memory_store.clear()
+        self._kv_store = {
+            key: value for key, value in self._kv_store.items() if not key.startswith("chat:")
+        }
+        return deleted
 
     async def get_value(self, key: str) -> Optional[str]:
         """Lit une valeur simple (utilisé pour les comptes utilisateurs et le cache de chat)."""

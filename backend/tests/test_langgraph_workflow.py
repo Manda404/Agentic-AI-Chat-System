@@ -18,7 +18,6 @@ from app.agents.safety_guard_agent import SafetyGuardAgent
 from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
 from app.agents.tool_router_agent import ToolRouterAgent
-from app.memory.redis_memory import RedisMemoryService
 from app.models.chat_models import ChatRequest, CriticReview, PlannerDecision, SafetyReview, SearchResult
 from app.state import GraphState
 from app.workflows.chat_workflow import ChatWorkflow
@@ -26,6 +25,7 @@ from app.workflows.chat_workflow import ChatWorkflow
 
 class FakeSearchService:
     index_name = "test-index"
+    collection = None
 
     async def search(self, query: str):
         return [
@@ -84,13 +84,33 @@ class FakeLLMService:
         return documents[:max_chars]
 
 
+class FakeMemoryService:
+    def __init__(self):
+        self.messages = {}
+        self.values = {}
+
+    async def get_messages(self, conversation_id):
+        return self.messages.get(conversation_id, [])
+
+    async def append_message(self, conversation_id, role, content):
+        self.messages.setdefault(conversation_id, []).append({"role": role, "content": content})
+
+    async def get_value(self, key):
+        return self.values.get(key)
+
+    async def set_value(self, key, value, ttl=None):
+        self.values[key] = value
+
+
 class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def build_workflow(self) -> ChatWorkflow:
-        workflow = ChatWorkflow()
-        workflow.llm_service = FakeLLMService()
-        workflow.search_service = FakeSearchService()
-        workflow.memory_service = RedisMemoryService("redis://localhost:0/0", 60)
-        workflow.cache_service = RedisMemoryService("redis://localhost:0/1", 60)
+        memory_service = FakeMemoryService()
+        workflow = ChatWorkflow(
+            memory_service=memory_service,
+            cache_service=memory_service,
+            search_service=FakeSearchService(),
+            llm_service=FakeLLMService(),
+        )
         workflow.memory_agent = MemoryAgent(workflow.memory_service)
         workflow.planner_agent = LLMPlannerAgent(workflow.llm_service)
         workflow.tool_router_agent = ToolRouterAgent()

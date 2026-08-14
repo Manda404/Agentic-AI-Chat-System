@@ -10,19 +10,21 @@ introuvable) se traduit par une `HTTPException(401)`.
 
 from fastapi import Header, HTTPException
 
-from app.config.settings import settings
+from fastapi import Depends
+
+from app.dependencies.services import get_auth_service
 from app.logger import logger
-from app.memory.redis_memory import RedisMemoryService
 from app.models.auth_models import UserResponse
 from app.services.auth_service import AuthService
 from app.services.token_service import TokenService
 
-memory_service = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
-auth_service = AuthService(memory_service)
 token_service = TokenService()
 
 
-async def get_current_user(authorization: str = Header(default="")) -> UserResponse:
+async def get_current_user(
+    authorization: str = Header(default=""),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> UserResponse:
     """Valide le header `Authorization: Bearer <token>` et retourne l'utilisateur courant."""
     if not authorization.startswith("Bearer "):
         logger.bind(authorization_header_present=bool(authorization)).warning(
@@ -47,5 +49,4 @@ async def get_current_user(authorization: str = Header(default="")) -> UserRespo
     except Exception as exc:
         logger.bind(reason=str(exc)).warning("Rejected request: invalid or expired token.")
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
-
 

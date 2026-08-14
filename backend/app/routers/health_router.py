@@ -8,20 +8,21 @@ que le frontend interroge en continu pour afficher les pastilles
 Volontairement exempté du rate limiting (voir `RateLimitMiddleware`).
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.config.settings import settings
 from app.logger import logger
+from app.dependencies.services import get_memory_service, get_search_service
 from app.memory.redis_memory import RedisMemoryService
 from app.services.search_service import SearchService
 
 router = APIRouter(tags=["health"])
 
-memory_service =  RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
-search_service = SearchService()
-
 @router.get("/health")
-def health() -> dict[str,object]:
+def health(
+    memory_service: RedisMemoryService = Depends(get_memory_service),
+    search_service: SearchService = Depends(get_search_service),
+) -> dict[str,object]:
     """Renvoie un instantané de l'état du backend et de ses dépendances."""
     logger.bind(
         redis_connected=memory_service.using_redis,

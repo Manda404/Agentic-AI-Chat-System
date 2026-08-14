@@ -9,11 +9,11 @@ service, logger le résultat, et transformer les erreurs métier en
 réponses HTTP (400/401).
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.config.settings import settings
 from app.logger import logger
-from app.memory.redis_memory import RedisMemoryService
+from app.dependencies.services import get_auth_service
 from app.models.auth_models import LoginRequest, RegisterRequest, TokenResponse, UserResponse
 from app.services.auth_service import AuthService
 from app.services.token_service import TokenService
@@ -21,12 +21,13 @@ from app.services.token_service import TokenService
 
 router = APIRouter(prefix=settings.api_prefix + "/auth", tags=["auth"])
 
-memory_service = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
-auth_service = AuthService(memory_service)
 token_service = TokenService()
 
 @router.post("/register",response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(request: RegisterRequest) -> UserResponse:
+async def register(
+    request: RegisterRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+) -> UserResponse:
     """Crée un nouveau compte utilisateur (email + mot de passe hashé) dans Redis."""
     logger.bind(user_id=request.email).info("Register request received.")
     try:
@@ -39,7 +40,10 @@ async def register(request: RegisterRequest) -> UserResponse:
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest) -> TokenResponse:
+async def login(
+    request: LoginRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+) -> TokenResponse:
     """Vérifie les identifiants et retourne un token JWT valable `AUTH_TOKEN_EXPIRY_MINUTES` minutes."""
     logger.bind(user_id=request.email).info("Login request received.")
     user = await auth_service.authenticate_user(request)

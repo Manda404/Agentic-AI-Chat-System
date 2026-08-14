@@ -1,4 +1,4 @@
-.PHONY: install install-backend install-frontend backend frontend dev
+.PHONY: install install-backend install-frontend backend frontend dev test eval-retrieval
 
 install: install-backend install-frontend
 
@@ -16,3 +16,12 @@ frontend:
 
 dev:
 	$(MAKE) -j2 backend frontend
+
+test:
+	cd backend && .venv/bin/python -m unittest discover -s tests
+
+# Benchmark Precision/Recall/MRR/NDCG du retrieval (voir docs/EVALUATION.md).
+# Nécessite MONGODB_URI valide et le jeu de données d'exemple déjà ingéré
+# (POST /ingest/sample-data).
+eval-retrieval:
+	cd backend && .venv/bin/python -m app.evaluation.retrieval_benchmark --verbose

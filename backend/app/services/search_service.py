@@ -122,7 +122,23 @@ class SearchService:
             )
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
+    async def clear_documents(self) -> int:
+        """Supprime tous les documents de la collection sans supprimer ses index Atlas."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available.")
+        result = await asyncio.to_thread(self._collection.delete_many, {})
+        deleted_count = int(result.deleted_count)
+        logger.bind(collection=self.index_name, deleted_count=deleted_count).warning(
+            "MongoDB document collection reset completed."
+        )
+        return deleted_count
+
     @property
     def available(self) -> bool:
         """True si la connexion MongoDB Atlas a réussi au démarrage (utilisé par `/health`)."""
         return self._collection is not None
+
+    def close(self) -> None:
+        """Ferme le client MongoDB possédé par ce service."""
+        if self._client is not None:
+            self._client.close()

@@ -8,7 +8,7 @@ il gère le cache Redis et l'historique, puis délègue l'orchestration à un
 
 import time
 import uuid
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -56,12 +56,21 @@ NodeHandler = Callable[[GraphState], Awaitable[AgentResult]]
 class ChatWorkflow:
     """Orchestre le chat via un graphe LangGraph compilé une seule fois."""
 
-    def __init__(self) -> None:
-        self.memory_service = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
-        self.cache_service = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
-        self.search_service = SearchService()
-        self.llm_service = LLMService()
-        self.embedding_service = HuggingFaceEmbeddingService()
+    def __init__(
+        self,
+        memory_service: Optional[RedisMemoryService] = None,
+        cache_service: Optional[RedisMemoryService] = None,
+        search_service: Optional[SearchService] = None,
+        llm_service: Optional[LLMService] = None,
+        embedding_service: Optional[HuggingFaceEmbeddingService] = None,
+    ) -> None:
+        self.memory_service = memory_service or RedisMemoryService(
+            settings.redis_url, settings.redis_ttl_seconds
+        )
+        self.cache_service = cache_service or self.memory_service
+        self.search_service = search_service or SearchService()
+        self.llm_service = llm_service or LLMService()
+        self.embedding_service = embedding_service or HuggingFaceEmbeddingService()
 
         self.memory_agent = MemoryAgent(self.memory_service)
         self.planner_agent = LLMPlannerAgent(self.llm_service)

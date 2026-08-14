@@ -16,15 +16,16 @@ Pour lancer le serveur en local :
 from app.config.settings import settings
 from app.logger import configure_logger, logger
 
-# Le logger doit être configuré avant d'importer les modules qui
-# créent des instances de services au niveau module (routers, etc.),
-# afin que leurs logs de démarrage soient bien capturés.
+# Le logger doit être configuré avant d'importer les routers et avant que
+# le lifespan ne construise le conteneur de services partagé.
 configure_logger()
 
 if settings.app_env.lower() not in {"development", "local", "test"} and (
     not settings.auth_secret_key or settings.auth_secret_key == "change-me-in-real-projects"
 ):
     raise RuntimeError("AUTH_SECRET_KEY must be set to a strong non-default value outside development.")
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,11 +38,24 @@ from app.routers.auth_router import router as auth_router
 from app.routers.health_router import router as health_router
 from app.routers.ingest_router import router as ingest_router
 from app.routers.chat_router import router as chat_router
+from app.service_container import ApplicationServices
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Crée les clients réseau dans le worker actif, puis les ferme à l'arrêt."""
+    services = ApplicationServices()
+    application.state.services = services
+    try:
+        yield
+    finally:
+        await services.close()
 
 app = FastAPI(
     title=settings.app_name,
     version="0.0.1",
-    description="Agentic RAG Platform backend with auth, Redis memory, MongoDB Atlas hybrid search (full-text + vector), LangGraph orchestration, and RAG-oriented agents."
+    description="Agentic RAG Platform backend with auth, Redis memory, MongoDB Atlas hybrid search (full-text + vector), LangGraph orchestration, and RAG-oriented agents.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -50,6 +64,11 @@ app.add_middleware(LoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.backend_cors_origins,
+    allow_origin_regex=(
+        settings.backend_cors_dev_origin_regex
+        if settings.app_env.lower() in {"development", "local"}
+        else None
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

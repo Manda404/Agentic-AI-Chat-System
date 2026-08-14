@@ -331,10 +331,7 @@ class LLMService:
 
     async def rerank_with_llm(self, user_message: str, documents: str) -> str:
         """Point d'extension pour un futur reranking LLM/cross-encoder."""
-        prompt = (
-            "Rank these documents for the user question. Return the best source labels only.\n\n"
-            f"Question:\n{user_message}\n\nDocuments:\n{documents}"
-        )
+        prompt = LLMPrompts.rerank(user_message=user_message, documents=documents)
         return await self.generate(
             prompt=prompt,
             capability=ModelCapability.REASONING,

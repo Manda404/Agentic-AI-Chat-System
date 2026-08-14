@@ -19,6 +19,7 @@ class FileIngestResponse(BaseModel):
     file_name: str
     file_type: str
     documents_processed: int
+    stored_path: str
 
 class BatchIngestResponse(BaseModel):
     """Réponse de `POST /ingest/batch`, avec un résumé succès/échec par fichier traité."""
@@ -27,6 +28,12 @@ class BatchIngestResponse(BaseModel):
     index_name: str
     files_summary: List[dict] = Field(default_factory=list)
     errors: Optional[List[str]] = Field(default_factory=list)
+
+class DataResetResponse(BaseModel):
+    """Résultat du reset des données applicatives, comptes utilisateurs exclus."""
+    mongodb_documents_deleted: int
+    redis_runtime_entries_deleted: int
+    user_accounts_preserved: bool = True
 
 class IngestRequest(BaseModel):
     """Corps attendu par `POST /ingest/batch`."""
