@@ -5,7 +5,13 @@ Implémente `VectorStorePort` (voir `retrieval_ports.py`) en réutilisant la
 collection pymongo déjà connectée par `SearchService` (même cluster, mêmes
 documents, un seul point de connexion) et un `EmbeddingService` pour
 vectoriser la requête utilisateur.
+
+`pymongo` est synchrone : `aggregate()` bloque le thread appelant. L'appel
+est délégué à `asyncio.to_thread` pour ne pas geler l'event loop pendant la
+requête `$vectorSearch`.
 """
+
+import asyncio
 
 from app.config.settings import settings
 from app.logger import logger
@@ -47,7 +53,7 @@ class MongoVectorStore:
                 },
                 {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
             ]
-            hits = list(collection.aggregate(pipeline))
+            hits = await asyncio.to_thread(lambda: list(collection.aggregate(pipeline)))
             return [
                 SearchResult(
                     title=hit.get("title", "Untitled"),

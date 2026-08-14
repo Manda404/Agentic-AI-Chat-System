@@ -26,11 +26,11 @@ auth_service = AuthService(memory_service)
 token_service = TokenService()
 
 @router.post("/register",response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(request: RegisterRequest) -> UserResponse:
+async def register(request: RegisterRequest) -> UserResponse:
     """Crée un nouveau compte utilisateur (email + mot de passe hashé) dans Redis."""
     logger.bind(user_id=request.email).info("Register request received.")
     try:
-        user = auth_service.register_user(request)
+        user = await auth_service.register_user(request)
         logger.bind(user_id=request.email).info("Register request completed.")
         return user
     except ValueError as exc:
@@ -39,10 +39,10 @@ def register(request: RegisterRequest) -> UserResponse:
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(request: LoginRequest) -> TokenResponse:
+async def login(request: LoginRequest) -> TokenResponse:
     """Vérifie les identifiants et retourne un token JWT valable `AUTH_TOKEN_EXPIRY_MINUTES` minutes."""
     logger.bind(user_id=request.email).info("Login request received.")
-    user = auth_service.authenticate_user(request)
+    user = await auth_service.authenticate_user(request)
     if not user:
         logger.bind(user_id=request.email).warning("Login request rejected.")
         raise HTTPException(status_code=401, detail="Invalid email or password.")

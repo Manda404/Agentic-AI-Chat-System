@@ -22,7 +22,7 @@ auth_service = AuthService(memory_service)
 token_service = TokenService()
 
 
-def get_current_user(authorization: str = Header(default="")) -> UserResponse:
+async def get_current_user(authorization: str = Header(default="")) -> UserResponse:
     """Valide le header `Authorization: Bearer <token>` et retourne l'utilisateur courant."""
     if not authorization.startswith("Bearer "):
         logger.bind(authorization_header_present=bool(authorization)).warning(
@@ -36,7 +36,7 @@ def get_current_user(authorization: str = Header(default="")) -> UserResponse:
         email = payload.get("sub")
         if not email:
             raise HTTPException(status_code=401, detail="Token subject is missing.")
-        user = auth_service.get_user(email)
+        user = await auth_service.get_user(email)
         if not user:
             logger.bind(user_id=email).warning("Token valid but user no longer exists.")
             raise HTTPException(status_code=401, detail="User not found.")

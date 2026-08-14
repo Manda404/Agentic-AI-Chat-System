@@ -79,7 +79,7 @@ async def ingest_sample_data(current_user: UserResponse = Depends(get_current_us
             "CSV documents loaded for ingest."
         )
         documents = await _attach_embeddings(documents)
-        indexed_count = search_service.bulk_index_documents(documents)
+        indexed_count = await search_service.bulk_index_documents(documents)
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             "Sample ingest completed."
         )
@@ -130,7 +130,7 @@ async def ingest_uploaded_file(
         )
 
         documents = await _attach_embeddings(documents)
-        indexed_count = search_service.bulk_index_documents(documents)
+        indexed_count = await search_service.bulk_index_documents(documents)
 
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             f"File ingest completed: {file.filename}"
@@ -194,7 +194,7 @@ async def ingest_batch_from_directory(
         for file_path, documents in results.items():
             try:
                 documents = await _attach_embeddings(documents)
-                indexed_count = search_service.bulk_index_documents(documents)
+                indexed_count = await search_service.bulk_index_documents(documents)
                 total_indexed += indexed_count
 
                 files_summary.append({

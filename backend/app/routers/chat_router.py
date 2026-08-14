@@ -36,7 +36,7 @@ async def chat(request: ChatRequest, current_user: UserResponse = Depends(get_cu
 
 
 @router.get("/conversations/{conversation_id}/context", response_model=ConversationContextResponse)
-def get_conversation_context(
+async def get_conversation_context(
     conversation_id: str,
     current_user: UserResponse = Depends(get_current_user),
 ) -> ConversationContextResponse:
@@ -44,7 +44,7 @@ def get_conversation_context(
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context requested."
     )
-    messages = memory_service.get_messages(conversation_id)
+    messages = await memory_service.get_messages(conversation_id)
     return ConversationContextResponse(
         conversation_id=conversation_id,
         message_count=len(messages),
@@ -52,7 +52,7 @@ def get_conversation_context(
     )
 
 @router.delete("/conversations/{conversation_id}/context", response_model=ConversationContextResponse)
-def clear_conversation_context(
+async def clear_conversation_context(
     conversation_id: str,
     current_user: UserResponse = Depends(get_current_user),
 ) -> ConversationContextResponse:
@@ -60,7 +60,7 @@ def clear_conversation_context(
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context cleared."
     )
-    memory_service.clear_messages(conversation_id)
+    await memory_service.clear_messages(conversation_id)
     return ConversationContextResponse(
         conversation_id=conversation_id,
         message_count=0,

@@ -21,10 +21,10 @@ class AuthService:
     def __init__(self,memory_service: RedisMemoryService):
         self.memory_service = memory_service
 
-    def register_user(self,request:RegisterRequest)->UserResponse:
+    async def register_user(self,request:RegisterRequest)->UserResponse:
         """Crée un compte si l'email n'existe pas déjà, sinon lève `ValueError`."""
         key = self.memory_service.user_key(request.email)
-        existing = self.memory_service.get_value(key)
+        existing = await self.memory_service.get_value(key)
 
         if existing:
             logger.bind(user_id=request.email).debug("Registration rejected: user already exists.")
@@ -35,14 +35,14 @@ class AuthService:
             "hashed_password": hash_password(request.password)
         }
 
-        self.memory_service.set_value(key, json.dumps(payload),ttl=-1)
+        await self.memory_service.set_value(key, json.dumps(payload),ttl=-1)
         logger.bind(user_id=request.email, storage_key=key).info("User account created and stored.")
         return UserResponse(email=request.email)
 
-    def authenticate_user(self, request: LoginRequest) -> Optional[UserResponse]:
+    async def authenticate_user(self, request: LoginRequest) -> Optional[UserResponse]:
         """Vérifie l'email + mot de passe, retourne `None` si l'un des deux est invalide."""
         key = self.memory_service.user_key(request.email)
-        stored_user = self.memory_service.get_value(key)
+        stored_user = await self.memory_service.get_value(key)
         if not stored_user:
             logger.bind(user_id=request.email).debug("Authentication failed: unknown email.")
             return None
@@ -54,10 +54,10 @@ class AuthService:
         return UserResponse(email=request.email)
 
 
-    def get_user(self, email: str) -> Optional[UserResponse]:
+    async def get_user(self, email: str) -> Optional[UserResponse]:
         """Récupère un utilisateur par email, utilisé pour valider un token JWT décodé."""
         key = self.memory_service.user_key(email)
-        stored_user = self.memory_service.get_value(key)
+        stored_user = await self.memory_service.get_value(key)
         if not stored_user:
             return None
         payload = json.loads(stored_user)

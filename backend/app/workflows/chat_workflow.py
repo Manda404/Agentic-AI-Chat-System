@@ -94,7 +94,7 @@ class ChatWorkflow:
         cache_key = f"chat:{conversation_id}:{request.message.strip().lower()}"
 
         try:
-            stored_context = self.memory_service.get_messages(conversation_id)
+            stored_context = await self.memory_service.get_messages(conversation_id)
             if len(request.message) > settings.max_user_message_chars:
                 answer = f"Message is too long. Maximum length is {settings.max_user_message_chars} characters."
                 return ChatResponse(
@@ -115,7 +115,7 @@ class ChatWorkflow:
                     safety_passed=False,
                     trace_id=conversation_id,
                 )
-            cached_answer = self.cache_service.get_value(cache_key)
+            cached_answer = await self.cache_service.get_value(cache_key)
 
             logger.bind(
                 conversation_id=conversation_id,
@@ -145,7 +145,7 @@ class ChatWorkflow:
                     trace_id=conversation_id,
                 )
 
-            self.memory_service.append_message(conversation_id, "user", request.message)
+            await self.memory_service.append_message(conversation_id, "user", request.message)
 
             initial_state = GraphState(
                 conversation_id=conversation_id,
@@ -163,8 +163,8 @@ class ChatWorkflow:
             state = GraphState.from_mapping(final_payload)
 
             answer = state.final_answer or "I could not produce an answer for this request."
-            self.memory_service.append_message(conversation_id, "assistant", answer)
-            self.cache_service.set_value(cache_key, answer)
+            await self.memory_service.append_message(conversation_id, "assistant", answer)
+            await self.cache_service.set_value(cache_key, answer)
 
             logger.bind(
                 conversation_id=conversation_id,
@@ -180,7 +180,7 @@ class ChatWorkflow:
                 agents_used=state.agents_used,
                 agent_results=state.agent_results,
                 cached=False,
-                context_messages=len(self.memory_service.get_messages(conversation_id)),
+                context_messages=len(await self.memory_service.get_messages(conversation_id)),
                 plan=state.plan,
                 critic_feedback=state.critic_feedback,
                 critic_passed=state.critic_passed,
