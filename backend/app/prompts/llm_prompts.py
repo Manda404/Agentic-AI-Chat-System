@@ -225,7 +225,7 @@ FINAL ANSWER ONLY:"""
 
 Return ONLY valid JSON matching this schema:
 {{
-  "intent": "greeting | direct_answer | document_qa | summarization | analysis | correction | planning | unknown",
+  "intent": "greeting | direct_answer | document_qa | summarization | analysis | correction | planning | calculation | document_list | unknown",
   "requires_retrieval": true,
   "requires_rag": true,
   "requires_critic": true,
@@ -254,10 +254,12 @@ ROUTING RULES:
 - Use "correction" for review, validation, rewriting, or fixing content supplied directly by the user.
 - Use "planning" for roadmaps, procedures, strategies, or ordered implementation steps not requiring document evidence.
 - Use "analysis" for multi-factor reasoning over content supplied directly in the conversation.
+- Use "calculation" for a self-contained arithmetic expression; select only the calculator tool and do not ask the LLM to calculate it.
+- Use "document_list" when the user asks which files or sources are currently indexed; select only the document_list tool.
 - Use "unknown" when intent is genuinely indeterminate; do not guess a specialized route.
-- Set requires_retrieval and requires_rag to true together for document_qa, otherwise false.
+- Set requires_retrieval and requires_rag to true together for document_qa, otherwise false. Document inventory is handled by document_list without RAG.
 - Keep requires_critic and requires_safety true.
-- Keep steps in execution order and tools minimal. Never invent step or tool names outside the schema example.
+- Keep steps in execution order and tools minimal. Allowed deterministic tools are calculator and document_list; never invent a tool name.
 - The reason must be one short sentence grounded in the current request; never include private reasoning.
 - Return every schema field exactly once as valid JSON, with no Markdown, comments, trailing commas, or text outside JSON.
 

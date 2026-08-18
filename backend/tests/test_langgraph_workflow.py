@@ -7,6 +7,7 @@ except ModuleNotFoundError as exc:
     raise unittest.SkipTest(f"Backend dependencies are not installed: {exc.name}")
 
 from app.agents.context_compression_agent import ContextCompressionAgent
+from app.agents.citation_validator_agent import CitationValidatorAgent
 from app.agents.final_answer_agent import FinalAnswerAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
 from app.agents.llm_critic_agent import LLMCriticAgent
@@ -18,9 +19,11 @@ from app.agents.safety_guard_agent import SafetyGuardAgent
 from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
 from app.agents.tool_router_agent import ToolRouterAgent
+from app.agents.tool_executor_agent import ToolExecutorAgent
 from app.models.chat_models import ChatRequest, CriticReview, PlannerDecision, SafetyReview, SearchResult
 from app.state import GraphState
 from app.workflows.chat_workflow import ChatWorkflow
+from app.tools import CalculatorTool, CitationValidatorTool, DocumentListTool
 
 
 class FakeSearchService:
@@ -39,10 +42,21 @@ class FakeSearchService:
             )
         ]
 
+    async def list_indexed_documents(self, limit: int = 200):
+        return [
+            {
+                "title": "LangGraph overview",
+                "file_name": "guide.pdf",
+                "page_number": 1,
+                "source": "test",
+            }
+        ]
+
 
 class FakeLLMService:
     async def plan(self, user_message: str, conversation_history: str = ""):
-        if user_message.lower().strip() in {"hello", "hi", "bonjour"}:
+        lowered = user_message.lower().strip()
+        if lowered in {"hello", "hi", "bonjour"}:
             return PlannerDecision(
                 intent="greeting",
                 requires_retrieval=False,
@@ -50,6 +64,20 @@ class FakeLLMService:
                 steps=["load_memory", "greeting", "critic_review", "safety_review", "final_answer"],
                 tools=["memory", "critic", "safety"],
                 reason="mock greeting",
+            )
+        if "2 + 2" in lowered:
+            return PlannerDecision(
+                intent="calculation",
+                steps=["load_memory", "calculate", "critic_review", "safety_review", "final_answer"],
+                tools=["memory", "calculator", "critic", "safety"],
+                reason="mock calculation",
+            )
+        if "list indexed documents" in lowered:
+            return PlannerDecision(
+                intent="document_list",
+                steps=["load_memory", "list_documents", "critic_review", "safety_review", "final_answer"],
+                tools=["memory", "document_list", "critic", "safety"],
+                reason="mock document list",
             )
         return PlannerDecision(
             intent="document_qa",
@@ -64,7 +92,7 @@ class FakeLLMService:
         return "Direct answer from summary agent."
 
     async def grounded_answer(self, question: str, retrieved_documents: str, conversation_history: str = ""):
-        return "LangGraph coordinates agents through a compiled state graph."
+        return "LangGraph coordinates agents through a compiled state graph [1]."
 
     async def critic_review(self, user_message: str, draft_answer: str, sources: str = ""):
         return CriticReview(
@@ -114,12 +142,16 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         workflow.memory_agent = MemoryAgent(workflow.memory_service)
         workflow.planner_agent = LLMPlannerAgent(workflow.llm_service)
         workflow.tool_router_agent = ToolRouterAgent()
+        workflow.tool_executor_agent = ToolExecutorAgent(
+            CalculatorTool(), DocumentListTool(workflow.search_service)
+        )
         workflow.summary_agent = SummaryAgent(workflow.llm_service)
         workflow.search_agent = SearchAgent(workflow.search_service)
         workflow.hybrid_retriever_agent = HybridRetrieverAgent()
         workflow.reranker_agent = RerankerAgent()
         workflow.context_compression_agent = ContextCompressionAgent(workflow.llm_service)
         workflow.rag_agent = RAGAgent(workflow.llm_service)
+        workflow.citation_validator_agent = CitationValidatorAgent(CitationValidatorTool())
         workflow.critic_agent = LLMCriticAgent(workflow.llm_service)
         workflow.safety_guard_agent = SafetyGuardAgent(workflow.llm_service)
         workflow.final_answer_agent = FinalAnswerAgent()
@@ -137,11 +169,13 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         for agent in [
             LLMPlannerAgent(FakeLLMService()),
             ToolRouterAgent(),
+            ToolExecutorAgent(CalculatorTool(), DocumentListTool(FakeSearchService())),
             SearchAgent(FakeSearchService()),
             HybridRetrieverAgent(),
             RerankerAgent(),
             ContextCompressionAgent(FakeLLMService()),
             RAGAgent(FakeLLMService()),
+            CitationValidatorAgent(CitationValidatorTool()),
             LLMCriticAgent(FakeLLMService()),
             SafetyGuardAgent(FakeLLMService()),
             FinalAnswerAgent(),
@@ -167,12 +201,42 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("search", response.agents_used)
         self.assertIn("reranker", response.agents_used)
         self.assertIn("rag", response.agents_used)
+        self.assertIn("citation_validator", response.agents_used)
         self.assertIn("critic", response.agents_used)
         self.assertIn("safety", response.agents_used)
         self.assertIn("final_answer", response.agents_used)
         self.assertTrue(response.critic_passed)
         self.assertTrue(response.plan)
         self.assertTrue(response.retrieval_metrics)
+        self.assertTrue(response.tool_results)
+
+    async def test_calculation_uses_safe_tool_route(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message="Calculate 2 + 2"))
+
+        self.assertEqual(response.route, "calculation")
+        self.assertEqual(response.answer.splitlines()[0], "2 + 2 = 4")
+        self.assertEqual(response.tool_results[0].tool, "calculator")
+        self.assertTrue(response.tool_results[0].success)
+
+    async def test_document_list_uses_inventory_tool(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message="List indexed documents"))
+
+        self.assertEqual(response.route, "document_list")
+        self.assertIn("guide.pdf", response.answer)
+        self.assertEqual(response.tool_results[0].tool, "document_list")
+
+    async def test_direct_answer_rejection_routes_to_one_summary_retry(self):
+        workflow = self.build_workflow()
+        route = workflow._route_after_critic(
+            {
+                "route": "direct_answer",
+                "critic_passed": False,
+                "correction_attempted": False,
+            }
+        )
+        self.assertEqual(route, "retry_summary")
 
     async def test_safety_redacts_secrets(self):
         state = GraphState(

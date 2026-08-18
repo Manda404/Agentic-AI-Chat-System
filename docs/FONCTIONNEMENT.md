@@ -1,225 +1,349 @@
-# Comment fonctionne le projet — pas à pas
+# Fonctionnement du projet — parcours complet
 
-Ce document a un seul objectif : que tu comprennes **ce qui se passe réellement**, dans l'ordre, quand tu utilises ce projet — du démarrage du serveur jusqu'à l'affichage d'une réponse dans le chat. Pas un catalogue de référence (ça, c'est [GUIDE_PROJET.md](GUIDE_PROJET.md) et [AGENTS.md](AGENTS.md)) : une histoire, racontée dans l'ordre chronologique exact d'exécution, avec pour chaque étape le **quoi**, le **pourquoi**, et le **et si ça échoue ?**.
+> Lecture chronologique du comportement réel, vérifiée contre le code le
+> **18 août 2026**.
 
-Contenu vérifié directement contre le code le 2026-08-14 (branche `feature/async-io-performance-fix`, après le passage du backend en I/O réellement asynchrones).
+## 1. Démarrage
 
----
-
-## Vue d'ensemble en 30 secondes
-
-Le projet, c'est un chat avec IA. Tu poses une question dans une page web (frontend Next.js). Cette question part vers un serveur (backend FastAPI) qui, au lieu de répondre bêtement avec un seul appel au modèle de langage, fait passer ta question à travers une **chaîne de 12 petits programmes spécialisés** (des "agents") : l'un se souvient de la conversation, l'un décide quoi faire, l'un cherche dans des documents, l'un reclasse les résultats, l'un génère la réponse, l'un vérifie qu'elle est correcte, l'un vérifie qu'elle ne contient pas de secret. Chaque agent fait une seule chose bien précise, puis passe la main au suivant. À la fin, tu reçois une réponse — et le frontend te montre aussi **tout ce qui s'est passé** dans un "cockpit de debug".
-
-```text
-Toi (navigateur)
-   → Frontend Next.js
-      → Backend FastAPI
-         → Cache Redis (déjà répondu à ça ? → réponse immédiate)
-         → Graphe LangGraph (les 12 agents, dans l'ordre)
-      ← Réponse + tout le détail du trajet
-   ← Affichage : réponse + cockpit
-```
-
-Le reste de ce document déroule chaque flèche ci-dessus, une par une.
-
----
-
-## Étape 0 — Démarrer le projet
-
-Avant qu'un utilisateur ne fasse quoi que ce soit, deux serveurs doivent tourner :
+Depuis la racine :
 
 ```bash
-make install   # installe les dépendances Python (venv) + les dépendances JS (npm)
-make dev       # lance les deux serveurs en parallèle
+make dev
 ```
 
-`make dev` lance concrètement deux process :
-- **Backend** (`uvicorn app.main:app --reload --port 8000`) : au démarrage, `backend/app/main.py` configure le logger, vérifie que `AUTH_SECRET_KEY` a été changé (sauf en dev), crée l'app FastAPI, empile les middlewares (sécurité, rate limiting, logs, CORS), puis enregistre les 4 groupes de routes (`health`, `auth`, `ingest`, `chat`). C'est aussi à ce moment que `ChatWorkflow()` est construit **une seule fois** (dans `chat_router.py`) : il ouvre la connexion Redis, la connexion MongoDB Atlas, initialise le client LLM — et construit le graphe des 12 agents, compilé une seule fois pour toute la durée de vie du process.
-- **Frontend** (`next dev -p 3000`) : sert la page unique de l'application (`frontend/app/page.tsx`).
+`make` lance deux cibles en parallèle :
 
-Aucune base de données locale à lancer : Redis (Redis Cloud) et MongoDB (Atlas) sont déjà hébergés en ligne, sur des tiers gratuits — le backend s'y connecte directement via les URLs présentes dans `backend/.env`.
+- `backend` : Uvicorn avec reload sur le port 8000 ;
+- `frontend` : Next.js dev sur le port 3000.
 
-**Et si Redis ou MongoDB sont injoignables ?** Le backend ne plante pas. `RedisMemoryService` bascule sur un dictionnaire Python en mémoire (les données seront perdues au redémarrage, mais le chat continue de fonctionner). `SearchService` marque simplement `available=False` : la recherche documentaire échouera proprement, mais l'authentification et les réponses directes (non documentaires) continuent de marcher.
+Le backend configure Loguru, vérifie la clé JWT hors environnement de
+développement, crée FastAPI, ajoute les middlewares et entre dans son lifespan.
+Le lifespan construit `ApplicationServices`, qui ouvre les clients Redis,
+MongoDB et LLM, crée le workflow et compile le graphe LangGraph une fois.
 
----
+Un échec Redis entraîne un fallback mémoire locale. Un échec MongoDB laisse le
+backend démarrer avec `mongodb_connected=false`. Une clé Hugging Face absente
+laisse également le backend démarrer, mais les appels LLM échoueront ensuite.
 
-## Étape 1 — Ouvrir l'application
+Un message `Address already in use` signifie qu'un autre processus écoute déjà
+sur le port. `clear` ne tue pas ce processus.
 
-Quand tu ouvres `http://localhost:3000`, le frontend affiche un écran de connexion/inscription, et interroge en tâche de fond `GET /health` (sans authentification nécessaire) pour savoir si le backend, Redis et MongoDB sont bien vivants. C'est ce qui allume les petites pastilles de statut ("backend", "redis", "mongodb", "model") que tu vois dans l'interface.
+## 2. Ouverture du frontend
 
-## Étape 2 — Créer un compte / se connecter
+À l'ouverture de `http://localhost:3000` :
 
-C'est la première vraie interaction avec le backend, et elle mérite d'être comprise en détail parce qu'elle illustre un pattern qu'on retrouve partout dans ce projet : **stocker dans Redis, jamais en clair**.
+1. le thème sauvegardé, ou la préférence système, est appliqué avant
+   l'hydratation ;
+2. le frontend lit le JWT et l'email dans `localStorage` ;
+3. si un JWT existe, il appelle `GET /api/v1/auth/me` ;
+4. le workspace n'est affiché que si le token est validé ;
+5. un `GET /health` initial alimente les statuts backend, Redis et MongoDB.
 
-1. Tu remplis email + mot de passe, tu cliques "register".
-2. Le frontend envoie `POST /api/v1/auth/register`.
-3. `AuthService.register_user()` vérifie d'abord si la clé `user:<email>` existe déjà dans Redis (`await memory_service.get_value(...)`).
-4. Si non : le mot de passe est haché (`pbkdf2_sha256`, jamais stocké en clair) et l'ensemble `{email, hashed_password}` est écrit dans Redis **sans expiration** (`ttl=-1`) — un compte créé reste valide indéfiniment.
-5. Tu cliques ensuite "login" → `POST /api/v1/auth/login` → `AuthService.authenticate_user()` relit la clé, vérifie le mot de passe haché, et si tout est bon, `TokenService.create_access_token()` fabrique un **JWT** signé (un jeton qui prouve ton identité) valable `AUTH_TOKEN_EXPIRY_MINUTES` (120 minutes par défaut).
-6. Le frontend garde ce token en mémoire et l'attache à **toutes** les requêtes suivantes dans l'en-tête `Authorization: Bearer <token>`.
+Il n'y a pas de polling automatique du health check. Les nouvelles vérifications
+sont déclenchées par le bouton refresh et après upload, ingestion ou reset.
 
-**Pourquoi c'est important pour la suite :** chaque route utile du projet (chat, ingestion, historique) est protégée par `Depends(get_current_user)`. Cette dépendance FastAPI lit le header, décode le JWT, puis revérifie dans Redis que l'utilisateur existe toujours (`await auth_service.get_user(email)`) — si tu supprimes le compte, le token devient inutile même s'il n'a pas encore expiré. Si une seule de ces vérifications échoue, tu reçois une `401` immédiate, avant même d'atteindre la logique métier.
+La pastille `model` ne prouve pas que le LLM répond : elle considère le modèle
+online quand le backend répond et que le provider déclaré vaut `ollama` ou
+`huggingface`.
 
-## Étape 3 — Ingérer des documents (optionnel, mais nécessaire pour le RAG)
+## 3. Inscription et connexion
 
-Sans documents indexés, le chat peut quand même répondre (mode direct), mais ne pourra jamais faire de recherche documentaire. Trois façons d'indexer, toutes protégées par authentification :
-- `POST /ingest/sample-data` : indexe le CSV d'exemple fourni avec le projet ;
-- `POST /ingest/upload` : tu uploades un PDF ou CSV depuis l'interface ;
-- `POST /ingest/batch` : le backend parcourt un dossier serveur entier.
-
-Dans tous les cas, la même mécanique se déclenche :
-
-1. Le fichier est lu et transformé en une liste de documents structurés (`title`, `snippet`, `category`, `source`, et pour les PDF : `file_name`/`page_number`).
-2. **Avant** l'indexation, `_attach_embeddings()` calcule un vecteur numérique (`embedding`, 384 nombres) pour chaque document, via un appel à HuggingFace (modèle `BAAI/bge-small-en-v1.5`). Un embedding, c'est une représentation mathématique du **sens** du texte — deux textes proches en sens auront des vecteurs proches, même s'ils n'utilisent pas les mêmes mots. C'est ce qui permettra plus tard la recherche "sémantique", pas seulement par mots-clés.
-3. Si ce calcul d'embedding échoue (quota, modèle indisponible), l'ingestion continue **quand même**, juste sans ce champ — le document restera cherchable en full-text, mais invisible pour la recherche vectorielle tant qu'il n'est pas ré-ingéré.
-4. Les documents (avec ou sans `embedding`) sont insérés dans la même collection MongoDB Atlas (`documents`), via `await search_service.bulk_index_documents(...)`.
-
-Cette **même collection** sert ensuite à deux types de recherche complètement différents (voir Étape 4.5) : un index full-text (mots-clés) et un index vectoriel (sens), tous deux construits sur les documents que tu viens d'indexer.
-
----
-
-## Étape 4 — Envoyer un message : le trajet complet
-
-C'est le cœur du projet. Tu tapes une question, tu appuies sur Entrée. Voici, dans l'ordre **exact** où le code les exécute, tout ce qui se passe avant que tu voies une réponse.
-
-### 4.0 — Le frontend envoie la requête
-
-`POST /api/v1/chat` avec `{ message, conversation_id, history }`. `conversation_id` est `null` la toute première fois — le backend en génère un nouveau (`uuid4`) et te le renvoie ; le frontend le réutilisera pour tous les messages suivants de la même conversation.
-
-### 4.1 — Vérification de taille
-
-Avant quoi que ce soit d'autre, `ChatWorkflow.run()` vérifie que ton message ne dépasse pas `MAX_USER_MESSAGE_CHARS` (8000 caractères). Si c'est le cas, tu reçois immédiatement une réponse `route="safety"` sans qu'aucun agent ne soit appelé — une protection simple contre les prompts abusifs.
-
-### 4.2 — Vérification du cache
-
-Le backend calcule une clé `chat:<conversation_id>:<message normalisé en minuscules>` et regarde si Redis a déjà une réponse pour **exactement** cette clé (`await cache_service.get_value(...)`).
-
-- **Cache hit** : la réponse stockée est renvoyée telle quelle, `route="cache"`, **aucun agent n'est exécuté**. C'est le chemin le plus rapide du projet.
-- **Cache miss** (le cas normal) : on continue.
-
-*Limite à connaître* : la clé est un match exact — poser la même question autrement formulée, ou depuis une autre conversation, ne touchera jamais ce cache.
-
-### 4.3 — MemoryAgent : charger le contexte
-
-Premier agent du graphe. Il regarde s'il y a un historique envoyé par le frontend (`request.history`) — s'il y en a un, il est prioritaire. Sinon, il va chercher l'historique stocké côté serveur (`await memory_service.get_messages(conversation_id)`, une lecture Redis). Le résultat (`conversation_context`) est mis à disposition de tous les agents suivants.
-
-### 4.4 — LLMPlannerAgent : décider quoi faire
-
-C'est l'agent qui **comprend** ta demande. Il envoie ta question au modèle de langage avec un prompt qui lui demande de répondre en JSON structuré : quelle est l'intention (`greeting`, `document_qa`, `summarization`, ...), a-t-on besoin de chercher des documents (`requires_rag`), faut-il vérifier la réponse (`requires_critic`), etc.
-
-**Et si le LLM ne répond pas ou répond n'importe quoi ?** L'agent ne plante pas : il bascule sur une classification par mots-clés, faite en local, sans appel réseau (salutation détectée par une liste de mots comme "bonjour"/"hello", résumé par des mots comme "summarize", sinon `document_qa` par défaut). C'est le filet de sécurité qui garantit que le chat continue de fonctionner même si le fournisseur LLM est en panne.
-
-### 4.5 — ToolRouterAgent : transformer la décision en chemin concret
-
-Le plan produit par le planner est encore abstrait ("il faut de la recherche documentaire"). Cet agent le traduit en une **route** que le graphe sait exécuter : `greeting`, `direct_answer`, `document_qa`, `rag`, ou `fallback`. C'est cette route qui détermine la suite : le graphe part maintenant dans l'une de trois directions.
+En mode register, le frontend enchaîne automatiquement :
 
 ```text
-route = "greeting"        → réponse de salutation statique, on saute direct à l'étape 4.10
-route = "direct_answer"   → SummaryAgent (étape 4.9), on saute la recherche documentaire
-route = "document_qa/rag" → pipeline documentaire complet (étapes 4.6 à 4.9)
+POST /api/v1/auth/register
+  → AuthService vérifie user:<email>
+  → hash PBKDF2-SHA256
+  → stockage Redis sans expiration
+POST /api/v1/auth/login
+  → vérification du hash
+  → création du JWT
+  → stockage local du JWT et de l'email
 ```
 
-### 4.6 — SearchAgent : recherche par mots-clés
+Les routes protégées utilisent `get_current_user`, qui valide le header Bearer,
+la signature et l'expiration du JWT, puis vérifie que le compte existe encore.
+Le logout frontend retire uniquement le token local ; il ne révoque pas le JWT
+côté serveur.
 
-*(uniquement si route documentaire)* Ta question part telle quelle vers MongoDB Atlas, via une requête `$search` (l'index Atlas Search, basé sur Lucene) qui cherche les mots de ta question dans les champs `title` (avec un bonus ×2), `snippet` et `category`. Jusqu'à 5 documents reviennent, avec un score de pertinence.
+## 4. Ingestion des documents
 
-*Depuis le passage à l'I/O asynchrone : cet appel réseau (`await asyncio.to_thread(...)`) ne bloque plus le serveur pendant qu'il attend la réponse de Mongo — d'autres utilisateurs peuvent être servis en parallèle pendant ce temps.*
+Le frontend propose deux actions visibles :
 
-### 4.7 — HybridRetrieverAgent : ajouter la recherche par le sens
+- drag-and-drop ou sélection d'un PDF/CSV, puis `upload & index` ;
+- `INGESTION DATA`, qui appelle `/api/v1/ingest/batch` sans body et indexe donc
+  le dossier `backend/data` par défaut.
 
-Cet agent va chercher un **second** jeu de résultats, cette fois par similarité de sens plutôt que par mots-clés : il transforme ta question en embedding (même mécanisme qu'à l'ingestion), puis interroge l'index vectoriel MongoDB Atlas (`$vectorSearch`) pour trouver les documents dont l'embedding stocké est le plus proche de celui de ta question. Il fusionne ensuite les deux listes (mots-clés + sens), enlève les doublons (même titre + même fichier/page), trie par score, et garde les 8 meilleurs.
+La route `/api/v1/ingest/sample-data` existe, mais n'est pas appelée par le
+bouton actuel.
 
-*Pourquoi deux recherches différentes ?* Le mot-clé trouve ce qui contient exactement tes termes ; le sens trouve ce qui **parle du même sujet** même avec d'autres mots. Combiner les deux donne un meilleur rappel qu'une seule méthode.
+### Upload
 
-### 4.8 — RerankerAgent : reclasser par pertinence réelle
+1. Le frontend refuse les extensions autres que PDF/CSV.
+2. Le backend neutralise le chemin du nom de fichier.
+3. Le fichier est conservé dans `backend/data` ; un suffixe UUID évite
+   l'écrasement d'un fichier homonyme.
+4. Un PDF produit un document par page non vide ; une page est tronquée à 5 000
+   caractères.
+5. Un CSV produit un document par ligne.
+6. Le backend demande en batch les embeddings de `title + snippet`.
+7. Les documents sont insérés dans MongoDB.
 
-Les résultats fusionnés ne sont pas encore dans le meilleur ordre pour répondre. Cet agent recalcule un score combiné pour chaque document : le score de recherche + un bonus si les mots de ta question apparaissent dans le titre/extrait (score "lexical"), plus — si activé (`SEMANTIC_RERANKER_ENABLED=true`) — une similarité de sens entre ta question et chaque document (score "sémantique"). Les documents sont retriés selon ce score combiné, et seuls les `MAX_RAG_DOCUMENTS` (5 par défaut) meilleurs sont gardés pour la suite.
+Si les embeddings échouent, l'étape 7 continue sans champ `embedding`. La
+recherche full-text reste possible, contrairement à la recherche vectorielle.
+Une nouvelle ingestion ne remplace pas les documents existants : elle ajoute de
+nouvelles lignes et peut créer des doublons.
 
-### 4.9 — ContextCompressionAgent : préparer le texte pour le LLM
+## 5. Envoi d'un message
 
-On ne peut pas envoyer des documents entiers au modèle de langage (coût, limite de taille de prompt). Cet agent réduit chaque extrait à une taille raisonnable, tout en gardant les labels de source (titre, fichier, page) pour que la réponse finale puisse citer ses sources, et respecte une limite globale (`MAX_RAG_CONTEXT_CHARS`, 4000 caractères par défaut).
+Le bouton send ou `Cmd/Ctrl+Enter` appelle :
 
-### 4.9bis — RAGAgent *ou* SummaryAgent : générer la réponse
+```http
+POST /api/v1/chat
+Authorization: Bearer <jwt>
+Content-Type: application/json
+```
 
-Deux chemins possibles selon la route décidée à l'étape 4.5 :
+Le payload contient le texte, le `conversation_id` courant et tout l'historique
+local. Le message d'accueil du frontend est lui aussi envoyé comme message
+assistant tant qu'il figure dans la liste locale.
 
-- **RAGAgent** (route documentaire) : envoie ta question + le contexte compressé au LLM, avec un prompt qui lui **interdit explicitement** de répondre en dehors des documents fournis. S'il n'y a aucun document disponible, l'agent ne tente même pas d'appeler le LLM — il répond directement qu'il n'a rien trouvé, pour éviter d'halluciner une réponse. Une section `Sources:` est toujours ajoutée à la fin.
-- **SummaryAgent** (route directe/salutation/résumé) : répond directement à partir de ta question et du contexte de conversation, sans recherche documentaire.
+Le message utilisateur est immédiatement ajouté à l'affichage. En cas d'échec
+réseau, le texte de l'exception navigateur est ajouté comme message assistant ;
+sur Safari, il peut s'agir simplement de `Load failed`.
 
-Dans les deux cas, le résultat est stocké comme `draft_answer` — une réponse "brouillon", pas encore validée.
+## 6. Prétraitement dans ChatWorkflow
 
-### 4.10 — LLMCriticAgent : vérifier la réponse avant de la laisser sortir
+### 6.1 Identifiant et contexte
 
-Cet agent relit la réponse brouillon avec le LLM et lui demande de juger : est-elle pertinente ? claire ? bien ancrée dans les documents s'il y en avait ? Le résultat est un score et un verdict `passed: true/false`.
+Le backend réutilise le `conversation_id` reçu ou génère un UUID. Il lit ensuite
+l'historique Redis avant toute exécution du graphe.
 
-**Et si le LLM critic échoue ?** Bascule sur `CriticAgent`, un jeu de règles locales déterministes (réponse non vide, longueur suffisante, sources visibles si la route l'exigeait) — pas d'appel réseau, donc pas de nouveau point de défaillance.
+### 6.2 Limite de taille
 
-**Si le critic refuse la réponse :** le graphe ne s'arrête pas là. Si aucune correction n'a encore été tentée pour cette requête, il relance **une seule fois** l'étape 4.9bis (`RAGAgent` ou `SummaryAgent`, selon la route) pour obtenir une meilleure réponse, puis revient ici. Cette boucle est strictement bornée à un essai — impossible qu'elle tourne indéfiniment.
+Au-delà de `MAX_USER_MESSAGE_CHARS`, la réponse est immédiate :
 
-### 4.11 — SafetyGuardAgent : dernier filtre avant la sortie
+- `route="safety"` ;
+- `agents_used=["safety"]` ;
+- pas de graphe, pas de cache écrit, pas de message ajouté à Redis.
 
-Un ultime passage cherche, par expression régulière, des clés API, tokens, mots de passe ou clés privées qui auraient pu se glisser dans la réponse (par exemple si un document indexé en contenait un). Toute correspondance est remplacée par `[REDACTED_SECRET]`.
+### 6.3 Cache
 
-### 4.12 — FinalAnswerAgent : assembler la réponse finale
-
-Ce dernier agent ne génère rien de nouveau : il choisit la meilleure réponse disponible parmi celles produites jusqu'ici, et y ajoute une note visible si le critic ou le safety guard n'étaient pas satisfaits (pour rester transparent plutôt que de cacher un problème).
-
-### 4.13 — Sauvegarde et retour au frontend
-
-`ChatWorkflow.run()` reprend la main après la fin du graphe : il enregistre ta question et la réponse dans l'historique Redis de la conversation (`await memory_service.append_message(...)`, deux fois), met la réponse en cache pour la prochaine fois (`await cache_service.set_value(...)`), puis renvoie un objet complet au frontend — la réponse, mais aussi la route empruntée, la liste des agents utilisés, le plan du planner, les métriques de retrieval, le score du critic, le statut safety, et un `trace_id`.
-
-### 4.14 — Le frontend affiche tout
-
-La réponse s'affiche dans la conversation. Le **cockpit de debug** (visible dans l'interface) déplie tout le reste : quelle route a été choisie, quels agents ont tourné, le plan, le score du critic, le statut sécurité, les métriques de retrieval, et la sortie brute de chaque agent. C'est volontaire : le projet ne veut pas juste te donner une réponse, il veut te montrer **comment** elle a été construite.
-
----
-
-## Étape 5 — Vue d'ensemble des filets de sécurité
-
-Un principe traverse tout ce trajet : **aucune panne isolée ne doit faire planter toute la conversation**. Récapitulatif de qui se rattrape comment :
-
-| Si ça échoue... | Alors... |
-|---|---|
-| Redis (mémoire/cache) | bascule sur un stockage en mémoire locale du process |
-| MongoDB (recherche) | le nœud continue avec une liste de résultats vide |
-| Recherche vectorielle | continue avec les seuls résultats par mots-clés |
-| Calcul d'embedding (rerank) | retombe sur le score par mots-clés seul |
-| Planner LLM | bascule sur une classification par mots-clés locale |
-| Génération RAG (LLM) | retombe sur les résultats de recherche bruts |
-| Critic LLM | bascule sur des règles locales déterministes |
-| N'importe quel nœud "swallow_errors" | log l'erreur, produit un résultat de repli explicite, le graphe continue |
-
----
-
-## Un exemple concret, du premier au dernier pas
-
-Question posée : **"What is Langfuse used for?"**
+La clé est :
 
 ```text
-1.  Frontend → POST /api/v1/chat {message: "What is Langfuse used for?", conversation_id: null}
-2.  Backend génère conversation_id = "a1b2c3..."
-3.  Longueur du message OK (bien en dessous de 8000 caractères)
-4.  Cache miss (première fois qu'on pose cette question dans cette conversation)
-5.  MemoryAgent : conversation_context = [] (nouvelle conversation)
-6.  LLMPlannerAgent : intent="document_qa", requires_rag=true
-7.  ToolRouterAgent : route="rag"
-8.  SearchAgent : 5 résultats full-text depuis MongoDB Atlas
-9.  HybridRetrieverAgent : + résultats vectoriels → fusion → 8 documents (full_text_count=5, vector_count=8, hybrid_count=8)
-10. RerankerAgent : reclassés par score lexical+sémantique → 5 meilleurs gardés
-11. ContextCompressionAgent : contexte réduit à < 4000 caractères
-12. RAGAgent : appelle le LLM avec la question + le contexte → réponse ancrée + "Sources: ..."
-13. LLMCriticAgent : score=0.95, passed=true → pas de retry nécessaire
-14. SafetyGuardAgent : aucun secret détecté, passed=true
-15. FinalAnswerAgent : choisit la réponse RAG telle quelle
-16. Historique + cache mis à jour dans Redis
-17. Frontend affiche la réponse + le cockpit (route=rag, 9 agents utilisés, critic_score=0.95, ...)
+chat:<conversation_id>:<message.strip().lower()>
 ```
 
----
+Un hit retourne `route="cache"` sans exécuter LangGraph et sans ajouter la
+répétition à l'historique. La clé ignore l'historique, le corpus, le modèle et les
+prompts ; elle peut donc renvoyer une réponse ancienne dans la même conversation.
 
-## Pour aller plus loin
+### 6.4 Cache miss
 
-- [GUIDE_PROJET.md](GUIDE_PROJET.md) — architecture complète, stack technique, configuration, sécurité, limites connues.
-- [AGENTS.md](AGENTS.md) — fiche détaillée de chaque agent (entrées/sorties précises dans `GraphState`, code interne).
-- [RAG_SYSTEM.md](RAG_SYSTEM.md) — le pipeline documentaire (étapes 4.6 à 4.9) en détail, avec les bugs connus fichier:ligne.
-- [EVALUATION.md](EVALUATION.md) — comment le projet teste automatiquement que ce trajet fonctionne comme prévu.
+Le message utilisateur est ajouté à Redis, puis le graphe reçoit un `GraphState`
+initial avec le message, l'historique frontend et `evaluation.cache.hit=false`.
+
+## 7. Exécution LangGraph
+
+### 7.1 MemoryAgent
+
+Il relit Redis et choisit :
+
+```python
+conversation_context = request_history or stored_history
+```
+
+Dès qu'un historique non vide est envoyé par le frontend, Redis n'est donc pas
+utilisé comme contexte du modèle pour ce tour.
+
+### 7.2 LLMPlannerAgent
+
+Le planner demande au LLM un `PlannerDecision` JSON : intention, besoins de
+retrieval/RAG, étapes, outils et raison. Pydantic valide la structure.
+
+Si l'appel ou le parsing échoue, une règle locale décide :
+
+- salutation exacte connue → `greeting` ;
+- demande d'inventaire du corpus → `document_list` ;
+- expression arithmétique ou demande de calcul contenant un nombre → `calculation` ;
+- résumé sans mot documentaire → `summarization` ;
+- mots de planification → `planning` ;
+- mots de correction → `correction` ;
+- tout le reste → `document_qa` + RAG.
+
+Ainsi, `hey my name is Manda` n'est pas une salutation exacte pour le fallback :
+en cas de panne du planner LLM, cette phrase part par défaut vers le RAG.
+
+### 7.3 ToolRouterAgent
+
+Il transforme l'intention en route. Les flags ont priorité :
+
+- `requires_rag=true` → `rag` ;
+- sinon `requires_retrieval=true` → `document_qa` ;
+- sinon mapping vers `greeting`, `direct_answer`, `calculation`,
+  `document_list` ou `fallback`.
+
+Les flags `requires_critic` et `requires_safety` ne modifient pas actuellement le
+graphe : ces deux étapes restent obligatoires hors cache.
+
+### 7.4 Branches
+
+```text
+greeting
+  → réponse statique
+
+direct_answer / fallback
+  → SummaryAgent
+
+calculation / document_list
+  → ToolExecutorAgent
+
+document_qa / rag
+  → SearchAgent
+  → HybridRetrieverAgent
+  → RerankerAgent
+  → ContextCompressionAgent
+  → RAGAgent, sauf document_qa avec requires_rag=false
+```
+
+`SummaryAgent` est en réalité un agent de réponse directe. Son prompt couvre
+question générale, résumé, correction, réécriture et planification.
+
+`ToolExecutorAgent` n'exécute pas un nom d'outil arbitraire produit par le LLM.
+Il utilise une allowlist liée à la route : calculatrice AST locale pour
+`calculation`, lecture bornée de l'inventaire MongoDB pour `document_list`.
+
+## 8. Branche RAG
+
+### SearchAgent
+
+MongoDB Atlas Search cherche la requête dans `title` (boost 2), `snippet` et
+`category`, puis garde 5 résultats.
+
+### HybridRetrieverAgent
+
+Il calcule l'embedding de la requête, exécute `$vectorSearch` avec jusqu'à 8
+résultats, concatène full-text et vectoriel, déduplique, trie les scores bruts et
+garde 8 candidats. Un échec vectoriel conserve le full-text.
+
+### RerankerAgent
+
+Pour chaque candidat :
+
+```text
+score = score_retrieval + 0.25 × mots_communs + 2.0 × cosinus
+```
+
+La partie cosinus est omise si le reranking sémantique est désactivé ou si les
+embeddings échouent. Les `MAX_RAG_DOCUMENTS` meilleurs sont gardés.
+
+### ContextCompressionAgent
+
+Le mode actif est local : il garde les labels source et tronque les snippets pour
+rester sous `MAX_RAG_CONTEXT_CHARS`. Le mode LLM existe mais n'est pas activé.
+
+### RAGAgent
+
+Sans document, il n'appelle pas le LLM et répond qu'aucun document pertinent n'a
+été trouvé. Avec des documents :
+
+1. il envoie question, contexte compressé et historique au prompt groundé ;
+2. le prompt exige la langue de la question et des citations `[n]` proches de
+   chaque affirmation ;
+3. le contenu des documents est explicitement traité comme donnée non fiable,
+   pas comme instruction ;
+4. l'application ajoute ensuite une section `Sources:` avec les trois premiers
+   documents.
+
+Si le LLM échoue, les résultats full-text formatés deviennent la réponse de
+secours, avec la section Sources.
+
+### CitationValidatorAgent
+
+Après `RAGAgent`, ce nœud vérifie les labels `[n]` dans le corps de la réponse :
+au moins un label quand des documents existent, et aucun numéro supérieur au
+nombre de documents disponibles. Sans document, la validation est marquée
+comme ignorée et réussie. Ce contrôle est structurel : il ne prouve pas que la
+phrase citée est sémantiquement supportée par la source.
+
+## 9. Critic, retry, safety et finalisation
+
+### Critic
+
+`LLMCriticAgent` demande un verdict JSON avec scores de grounding, pertinence et
+clarté. En cas d'échec, `CriticAgent` vérifie localement : réponse présente,
+longueur minimale, documents et section Sources pour une route RAG.
+
+### Retry
+
+- Route RAG refusée avec documents : un seul retry du `RAGAgent`, puis nouveau
+  passage critic.
+- Route directe refusée : un seul retry du `SummaryAgent`, via
+  `prepare_summary_retry`, puis nouveau passage critic.
+- Après un retry déjà tenté, la réponse passe au safety même si le critic refuse
+  encore.
+
+### Safety
+
+Le garde-fou actif est local. Trois regex masquent clés/tokens/mots de passe et
+en-têtes de clés privées avec `[REDACTED_SECRET]`. Une revue LLM existe mais
+`use_llm` reste `false` dans le workflow.
+
+### FinalAnswerAgent
+
+Il choisit la première sortie disponible parmi réponse déjà finalisée, draft,
+RAG, réponse directe, search et fallback générique. Il ajoute une note de
+validation ou de sécurité lorsque nécessaire.
+
+## 10. Retour et affichage
+
+Après le graphe, le backend :
+
+1. ajoute la réponse assistant à Redis ;
+2. écrit la réponse dans le cache ;
+3. relit l'historique pour calculer `context_messages` ;
+4. retourne `ChatResponse`.
+
+Le frontend affiche la réponse puis met à jour le cockpit : route, agents,
+outils (`tool_results`), cache, plan, critic, safety, métriques, trace et
+sorties brutes. Chaque outil y apparaît avec un statut `ok` ou `failed`.
+
+## 11. Diagnostic rapide
+
+### `Load failed`
+
+La requête n'a généralement pas atteint FastAPI. Vérifier :
+
+```bash
+curl http://127.0.0.1:8000/health
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+Si aucun `Incoming request ... path=/api/v1/chat` n'apparaît dans
+`backend/logs/multi-agent-backend.log`, le problème est entre le navigateur et
+le backend, pas dans les agents.
+
+### Réponse sans documents
+
+Vérifier `mongodb_connected`, l'existence des index Atlas, l'ingestion et les
+sorties `search`/`hybrid_retriever` dans le cockpit.
+
+### Réponse lente
+
+Consulter `evaluation.latency_ms`. Le chemin RAG peut appeler le planner, les
+embeddings plusieurs fois, le LLM de réponse et le critic. Le retry RAG ajoute un
+second appel de génération et de critique.
+
+### Quota Hugging Face
+
+Le planner et le critic ont des fallbacks. Le RAG retombe sur les résultats de
+recherche. Le système peut donc renvoyer une réponse dégradée plutôt qu'une erreur
+HTTP, mais l'indicateur model peut rester visuellement online.
+
+## 12. Documents complémentaires
+
+- [GUIDE_PROJET.md](GUIDE_PROJET.md) — référence d'architecture et sécurité.
+- [AGENTS.md](AGENTS.md) — contrat détaillé de chaque agent.
+- [RAG_SYSTEM.md](RAG_SYSTEM.md) — qualité et limites du retrieval.
+- [EVALUATION.md](EVALUATION.md) — tests et métriques.

@@ -42,12 +42,20 @@ type AgentResult = {
   metadata: Record<string, unknown>;
 };
 
+type ToolResult = {
+  tool: "calculator" | "document_list" | "citation_validator";
+  output: string;
+  success: boolean;
+  metadata: Record<string, unknown>;
+};
+
 type ChatResponse = {
   conversation_id: string;
   route: string;
   answer: string;
   agents_used: string[];
   agent_results: AgentResult[];
+  tool_results?: ToolResult[];
   cached: boolean;
   context_messages?: number;
   plan?: string[];
@@ -1621,6 +1629,17 @@ export default function Home() {
                     value={
                       lastResponse?.retrieval_metrics
                         ? JSON.stringify(lastResponse.retrieval_metrics)
+                        : "--"
+                    }
+                    style={terminalLineStyle}
+                  />
+                  <TerminalLine
+                    label={<Wrench size={11} />}
+                    value={
+                      lastResponse?.tool_results?.length
+                        ? lastResponse.tool_results
+                            .map((result) => `${result.tool}:${result.success ? "ok" : "failed"}`)
+                            .join(", ")
                         : "--"
                     }
                     style={terminalLineStyle}

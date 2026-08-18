@@ -10,7 +10,7 @@ garder les agents faciles à tester et à lire.
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
-from app.models.chat_models import AgentResult, ChatMessage, PlannerDecision, SearchResult
+from app.models.chat_models import AgentResult, ChatMessage, PlannerDecision, SearchResult, ToolResult
 
 
 class GraphStateDict(TypedDict, total=False):
@@ -25,6 +25,7 @@ class GraphStateDict(TypedDict, total=False):
     intent: Optional[str]
     plan: List[str]
     tools: List[str]
+    tool_results: List[ToolResult]
     planner_decision: Optional[PlannerDecision]
     search_results: List[SearchResult]
     reranked_results: List[SearchResult]
@@ -61,6 +62,7 @@ class GraphState:
     intent: Optional[str] = None
     plan: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
+    tool_results: List[ToolResult] = field(default_factory=list)
     planner_decision: Optional[PlannerDecision] = None
     search_results: List[SearchResult] = field(default_factory=list)
     reranked_results: List[SearchResult] = field(default_factory=list)
@@ -91,6 +93,7 @@ class GraphState:
         values.setdefault("conversation_context", [])
         values.setdefault("plan", [])
         values.setdefault("tools", [])
+        values.setdefault("tool_results", [])
         values.setdefault("search_results", [])
         values.setdefault("reranked_results", [])
         values.setdefault("agents_used", [])
@@ -113,6 +116,10 @@ class GraphState:
         values["agent_results"] = [
             item if isinstance(item, AgentResult) else AgentResult(**item)
             for item in values["agent_results"]
+        ]
+        values["tool_results"] = [
+            item if isinstance(item, ToolResult) else ToolResult(**item)
+            for item in values["tool_results"]
         ]
         if values.get("planner_decision") and not isinstance(values["planner_decision"], PlannerDecision):
             values["planner_decision"] = PlannerDecision(**values["planner_decision"])

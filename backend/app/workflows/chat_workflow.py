@@ -13,6 +13,7 @@ from typing import Awaitable, Callable, Optional
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.context_compression_agent import ContextCompressionAgent
+from app.agents.citation_validator_agent import CitationValidatorAgent
 from app.agents.final_answer_agent import FinalAnswerAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
 from app.agents.llm_critic_agent import LLMCriticAgent
@@ -24,6 +25,7 @@ from app.agents.safety_guard_agent import SafetyGuardAgent
 from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
 from app.agents.tool_router_agent import ToolRouterAgent
+from app.agents.tool_executor_agent import ToolExecutorAgent
 from app.config.settings import settings
 from app.logger import clear_log_context, logger, set_log_context, update_log_context
 from app.memory.redis_memory import RedisMemoryService
@@ -34,6 +36,7 @@ from app.services.mongo_vector_store import MongoVectorStore
 from app.services.search_service import SearchService
 from app.state import GraphState
 from app.state.graph_state import GraphStateDict
+from app.tools import CalculatorTool, CitationValidatorTool, DocumentListTool
 
 if settings.langfuse_enabled:
     try:
@@ -75,6 +78,10 @@ class ChatWorkflow:
         self.memory_agent = MemoryAgent(self.memory_service)
         self.planner_agent = LLMPlannerAgent(self.llm_service)
         self.tool_router_agent = ToolRouterAgent()
+        self.tool_executor_agent = ToolExecutorAgent(
+            calculator=CalculatorTool(),
+            document_list=DocumentListTool(self.search_service),
+        )
         self.summary_agent = SummaryAgent(self.llm_service)
         self.search_agent = SearchAgent(self.search_service)
         self.hybrid_retriever_agent = HybridRetrieverAgent(
@@ -89,6 +96,7 @@ class ChatWorkflow:
             max_chars=settings.max_rag_context_chars,
         )
         self.rag_agent = RAGAgent(self.llm_service)
+        self.citation_validator_agent = CitationValidatorAgent(CitationValidatorTool())
         self.critic_agent = LLMCriticAgent(self.llm_service)
         self.safety_guard_agent = SafetyGuardAgent(self.llm_service)
         self.final_answer_agent = FinalAnswerAgent()
@@ -188,6 +196,7 @@ class ChatWorkflow:
                 answer=answer,
                 agents_used=state.agents_used,
                 agent_results=state.agent_results,
+                tool_results=state.tool_results,
                 cached=False,
                 context_messages=len(await self.memory_service.get_messages(conversation_id)),
                 plan=state.plan,
@@ -209,6 +218,7 @@ class ChatWorkflow:
         graph.add_node("memory", self._agent_node("MemoryAgent", self.memory_agent.run))
         graph.add_node("planner", self._agent_node("LLMPlannerAgent", self.planner_agent.run))
         graph.add_node("tool_router", self._agent_node("ToolRouterAgent", self.tool_router_agent.run))
+        graph.add_node("tool_executor", self._agent_node("ToolExecutorAgent", self.tool_executor_agent.run))
         graph.add_node("greeting", self._greeting_node)
         graph.add_node("search", self._agent_node("SearchAgent", self.search_agent.run, swallow_errors=True))
         graph.add_node("hybrid_retriever", self._agent_node("HybridRetrieverAgent", self.hybrid_retriever_agent.run, swallow_errors=True))
@@ -216,6 +226,7 @@ class ChatWorkflow:
         graph.add_node("context_compression", self._agent_node("ContextCompressionAgent", self.context_compression_agent.run, swallow_errors=True))
         graph.add_node("summary", self._agent_node("SummaryAgent", self.summary_agent.run, swallow_errors=True))
         graph.add_node("rag", self._agent_node("RAGAgent", self.rag_agent.run, swallow_errors=True))
+        graph.add_node("citation_validator", self._agent_node("CitationValidatorAgent", self.citation_validator_agent.run))
         graph.add_node("critic", self._agent_node("CriticAgent", self.critic_agent.run))
         graph.add_node("safety", self._agent_node("SafetyGuardAgent", self.safety_guard_agent.run))
         graph.add_node("prepare_rag_retry", self._prepare_retry_node("rag"))
@@ -233,9 +244,12 @@ class ChatWorkflow:
                 "direct_answer": "summary",
                 "document_qa": "search",
                 "rag": "search",
+                "calculation": "tool_executor",
+                "document_list": "tool_executor",
                 "fallback": "summary",
             },
         )
+        graph.add_edge("tool_executor", "critic")
         graph.add_edge("search", "hybrid_retriever")
         graph.add_edge("hybrid_retriever", "reranker")
         graph.add_edge("reranker", "context_compression")
@@ -249,7 +263,8 @@ class ChatWorkflow:
         )
         graph.add_edge("greeting", "critic")
         graph.add_edge("summary", "critic")
-        graph.add_edge("rag", "critic")
+        graph.add_edge("rag", "citation_validator")
+        graph.add_edge("citation_validator", "critic")
         graph.add_conditional_edges(
             "critic",
             self._route_after_critic,
@@ -376,6 +391,8 @@ class ChatWorkflow:
             return "direct_answer"
         if route in {"document_qa", "rag"}:
             return "rag"
+        if route in {"calculation", "document_list"}:
+            return route
         return "fallback"
 
     def _route_after_retrieval(self, payload: GraphStateDict) -> str:
@@ -395,7 +412,7 @@ class ChatWorkflow:
         route = payload.get("route") or "rag"
         if route in {"rag", "parallel"} and payload.get("search_results"):
             return "retry_rag"
-        if route in {"summary", "simple_llm", "planning", "correction"}:
+        if route in {"direct_answer", "summary", "simple_llm", "planning", "correction"}:
             return "retry_summary"
         return "safety"
 
