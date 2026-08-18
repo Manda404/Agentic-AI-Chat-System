@@ -30,6 +30,8 @@ class ToolRouterAgent:
         "analysis": "direct_answer",
         "correction": "direct_answer",
         "planning": "direct_answer",
+        "calculation": "calculation",
+        "document_list": "document_list",
         "document_qa": "document_qa",
         "unknown": "fallback",
     }

@@ -34,6 +34,15 @@ class AgentResult(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ToolResult(BaseModel):
+    """Résultat typé d'un outil déterministe autorisé par le workflow."""
+
+    tool: Literal["calculator", "document_list", "citation_validator"]
+    output: str
+    success: bool = True
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class PlannerDecision(BaseModel):
     """Plan structuré produit par le planner LLM ou son fallback déterministe."""
 
@@ -45,6 +54,8 @@ class PlannerDecision(BaseModel):
         "analysis",
         "correction",
         "planning",
+        "calculation",
+        "document_list",
         "unknown",
     ] = "unknown"
     requires_retrieval: bool = False
@@ -84,6 +95,7 @@ class ChatResponse(BaseModel):
     answer: str
     agents_used: List[str]
     agent_results: List[AgentResult]
+    tool_results: List[ToolResult] = Field(default_factory=list)
     cached: bool = False
     context_messages: int = 0
     plan: List[str] = Field(default_factory=list)

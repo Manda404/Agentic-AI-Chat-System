@@ -5,62 +5,61 @@
  * ces variables via `var(--token)` plutôt que des couleurs codées en dur,
  * pour que la bascule jour/nuit change tout instantanément sans re-render.
  *
- * Deux familles de vert distinctes, volontairement gardées séparées :
- * - "muted"  (rgba 34,197,94 à l'origine) : bordures/halos discrets.
- * - "neon"   (rgba 0,255,102 à l'origine)  : bordures/halos "terminal CRT"
- *   des panneaux principaux de l'app authentifiée.
+ * Le mode nuit utilise une base bleu-noir neutre. Le vert reste réservé
+ * aux actions, aux statuts et aux éléments actifs afin de conserver
+ * l'identité terminal sans fatiguer la lecture.
  */
 
 :root {
   color-scheme: dark;
 
-  --bg-page: #020403;
-  --decor-a: rgba(22, 163, 74, 0.12);
-  --decor-b: rgba(74, 222, 128, 0.08);
+  --bg-page: #0b0f14;
+  --decor-a: rgba(34, 197, 94, 0.07);
+  --decor-b: rgba(56, 189, 248, 0.035);
 
-  --surface-panel: rgba(2, 8, 4, 0.92);
-  --surface-card: rgba(3, 12, 6, 0.8);
-  --surface-control: rgba(2, 10, 4, 0.95);
-  --surface-control-active: rgba(20, 83, 45, 0.86);
-  --bg-input: #031007;
-  --bg-terminal-block: rgba(2, 10, 4, 0.72);
+  --surface-panel: rgba(14, 20, 27, 0.96);
+  --surface-card: rgba(17, 24, 32, 0.9);
+  --surface-control: rgba(13, 19, 26, 0.96);
+  --surface-control-active: rgba(20, 83, 45, 0.5);
+  --bg-input: #0d141b;
+  --bg-terminal-block: rgba(13, 21, 28, 0.88);
 
-  --gradient-app-bg: linear-gradient(180deg, rgba(0, 8, 4, 0.96), rgba(0, 4, 2, 0.98));
-  --gradient-panel: linear-gradient(180deg, rgba(0, 10, 4, 0.96), rgba(0, 5, 2, 0.98));
-  --gradient-panel-alt: linear-gradient(180deg, rgba(1, 9, 4, 0.98), rgba(2, 14, 6, 0.96));
-  --gradient-chat-column: radial-gradient(circle at top, rgba(0, 255, 102, 0.06), transparent 18%),
-    linear-gradient(180deg, rgba(0, 7, 3, 0.98), rgba(0, 3, 1, 0.99));
-  --gradient-top-strip: linear-gradient(180deg, rgba(0, 12, 5, 0.98), rgba(0, 8, 4, 0.94));
-  --gradient-chat-window: linear-gradient(180deg, rgba(0, 7, 3, 0.95), rgba(0, 4, 2, 0.99));
-  --gradient-terminal-card: linear-gradient(180deg, rgba(0, 9, 4, 0.98), rgba(0, 4, 2, 0.99));
-  --gradient-prompt-chip: linear-gradient(180deg, rgba(0, 16, 7, 0.96), rgba(0, 10, 4, 0.98));
-  --gradient-composer: linear-gradient(180deg, rgba(0, 11, 5, 0.98), rgba(0, 7, 3, 0.99));
-  --gradient-user-bubble: linear-gradient(180deg, rgba(0, 84, 34, 0.72), rgba(0, 52, 22, 0.88));
-  --gradient-assistant-bubble: linear-gradient(180deg, rgba(0, 12, 5, 0.96), rgba(0, 7, 3, 0.98));
-  --gradient-accent-btn: linear-gradient(180deg, rgba(16, 72, 40, 0.98), rgba(18, 108, 54, 0.94));
-  --gradient-accent-btn-square: linear-gradient(180deg, rgba(8, 44, 24, 0.98), rgba(13, 84, 42, 0.96));
-  --gradient-resize-divider: linear-gradient(180deg, rgba(0, 255, 102, 0.08), rgba(0, 255, 102, 0.02));
+  --gradient-app-bg: linear-gradient(180deg, #0c1117, #090d12);
+  --gradient-panel: linear-gradient(180deg, rgba(17, 24, 32, 0.98), rgba(12, 18, 24, 0.99));
+  --gradient-panel-alt: linear-gradient(180deg, rgba(18, 26, 34, 0.98), rgba(13, 20, 27, 0.98));
+  --gradient-chat-column: radial-gradient(circle at top, rgba(34, 197, 94, 0.035), transparent 22%),
+    linear-gradient(180deg, rgba(12, 18, 24, 0.99), rgba(8, 13, 18, 0.99));
+  --gradient-top-strip: linear-gradient(180deg, rgba(18, 25, 33, 0.99), rgba(13, 19, 26, 0.97));
+  --gradient-chat-window: linear-gradient(180deg, rgba(13, 20, 27, 0.97), rgba(9, 14, 20, 0.99));
+  --gradient-terminal-card: linear-gradient(180deg, rgba(15, 22, 29, 0.99), rgba(10, 15, 21, 0.99));
+  --gradient-prompt-chip: linear-gradient(180deg, rgba(19, 27, 35, 0.98), rgba(13, 20, 27, 0.99));
+  --gradient-composer: linear-gradient(180deg, rgba(17, 24, 32, 0.99), rgba(12, 18, 25, 0.99));
+  --gradient-user-bubble: linear-gradient(180deg, rgba(20, 83, 45, 0.8), rgba(15, 61, 35, 0.92));
+  --gradient-assistant-bubble: linear-gradient(180deg, rgba(20, 28, 37, 0.98), rgba(14, 21, 28, 0.99));
+  --gradient-accent-btn: linear-gradient(180deg, rgba(22, 101, 52, 0.98), rgba(21, 128, 61, 0.95));
+  --gradient-accent-btn-square: linear-gradient(180deg, rgba(20, 83, 45, 0.98), rgba(21, 128, 61, 0.96));
+  --gradient-resize-divider: linear-gradient(180deg, rgba(74, 222, 128, 0.09), rgba(74, 222, 128, 0.015));
 
-  --border-muted-soft: rgba(34, 197, 94, 0.1);
-  --border-muted: rgba(34, 197, 94, 0.14);
-  --border-muted-strong: rgba(34, 197, 94, 0.18);
-  --border-accent: rgba(74, 222, 128, 0.3);
-  --border-neon: rgba(0, 255, 102, 0.18);
-  --border-neon-strong: rgba(0, 255, 102, 0.22);
+  --border-muted-soft: rgba(139, 152, 165, 0.09);
+  --border-muted: rgba(139, 152, 165, 0.14);
+  --border-muted-strong: rgba(139, 152, 165, 0.2);
+  --border-accent: rgba(74, 222, 128, 0.34);
+  --border-neon: rgba(74, 222, 128, 0.14);
+  --border-neon-strong: rgba(74, 222, 128, 0.2);
 
-  --text-primary: #f0fdf4;
-  --text-secondary: #d1fae5;
-  --text-tertiary: #a7f3d0;
-  --text-label: #86efac;
-  --text-label-soft: #bbf7d0;
-  --text-faint: #6b7280;
-  --text-dim: #9ca3af;
+  --text-primary: #e6edf3;
+  --text-secondary: #bac4ce;
+  --text-tertiary: #8b98a5;
+  --text-label: #93a1ae;
+  --text-label-soft: #abb7c2;
+  --text-faint: #65717d;
+  --text-dim: #8b98a5;
 
   --accent: #4ade80;
   --accent-strong: #22c55e;
-  --accent-glow: rgba(34, 197, 94, 0.6);
-  --accent-glow-soft: rgba(34, 197, 94, 0.1);
-  --accent-inset-faint: rgba(134, 239, 172, 0.06);
+  --accent-glow: rgba(34, 197, 94, 0.42);
+  --accent-glow-soft: rgba(34, 197, 94, 0.08);
+  --accent-inset-faint: rgba(134, 239, 172, 0.045);
 
   --status-danger: #fb7185;
   --status-danger-strong: #f43f5e;
@@ -74,10 +73,10 @@
   --shadow-soft: rgba(0, 0, 0, 0.18);
   --shadow-medium: rgba(0, 0, 0, 0.26);
   --shadow-strong: rgba(0, 0, 0, 0.34);
-  --glow-neon-faint: rgba(0, 255, 102, 0.025);
-  --glow-neon-soft: rgba(0, 255, 102, 0.05);
-  --glow-neon-medium: rgba(0, 255, 102, 0.1);
-  --ring-faint: rgba(34, 197, 94, 0.04);
+  --glow-neon-faint: rgba(74, 222, 128, 0.018);
+  --glow-neon-soft: rgba(74, 222, 128, 0.035);
+  --glow-neon-medium: rgba(74, 222, 128, 0.07);
+  --ring-faint: rgba(139, 152, 165, 0.04);
 }
 
 [data-theme="light"] {

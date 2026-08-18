@@ -1,325 +1,583 @@
-# Les agents du projet — rôle et fonctionnement détaillé
+# Agents et graphe LangGraph
 
-Ce document présente en détail chacun des agents du workflow LangGraph : leur rôle, ce qu'ils lisent/écrivent dans l'état partagé (`GraphState`), leur logique interne réelle, et leur comportement en cas d'échec. Pour la vue d'ensemble du projet (stack, architecture, sécurité), voir [GUIDE_PROJET.md](GUIDE_PROJET.md). Pour le détail du pipeline RAG et ses limites connues, voir [RAG_SYSTEM.md](RAG_SYSTEM.md).
+> Contrats vérifiés contre `backend/app/agents/`, `backend/app/state/` et
+> `backend/app/workflows/chat_workflow.py` le **18 août 2026**.
 
-Contenu vérifié directement contre le code source (`backend/app/agents/`, `backend/app/workflows/chat_workflow.py`) le 2026-08-14.
+## 1. Ce que signifie « agent » dans ce projet
 
----
+Un agent est une classe avec une méthode asynchrone `run(GraphState) ->
+AgentResult`. Il lit et modifie l'état partagé, puis retourne une sortie brute
+visible dans le cockpit frontend.
 
-## Vue d'ensemble
+Chaque agent possède une responsabilité limitée. L'objectif n'est pas de faire
+travailler plusieurs chatbots indépendants, mais de découper une réponse en
+étapes contrôlables : comprendre la demande, choisir un chemin, retrouver les
+preuves, générer, vérifier, sécuriser puis finaliser. Cette séparation rend les
+fallbacks, les métriques et le diagnostic beaucoup plus précis qu'avec un seul
+appel LLM monolithique.
 
-Le graphe LangGraph (`ChatWorkflow._build_graph()`) compte **15 nœuds** :
-- **12 nœuds adossés à une classe d'agent dédiée** (détaillés ci-dessous) ;
-- **1 classe de secours interne**, `CriticAgent`, appelée par `LLMCriticAgent` si le LLM échoue — ce n'est pas un nœud du graphe en soi ;
-- **3 nœuds techniques** sans classe propre : `greeting`, `prepare_rag_retry`, `prepare_summary_retry`.
+Le graphe contient :
 
-Chaque agent reçoit l'état partagé de la conversation (`GraphState`), réalise une tâche précise, puis enrichit cet état pour l'étape suivante. Chaque agent ajoute aussi sa sortie brute dans `state.agent_results` (visible dans le cockpit de debug du frontend) et son nom dans `state.agents_used`.
+- 14 nœuds associés à une classe d'agent ;
+- 3 nœuds techniques définis dans `ChatWorkflow` ;
+- 1 classe de critic déterministe appelée uniquement en fallback.
 
-**Il n'y a pas d'agent superviseur.** Une version antérieure du projet avait un `SupervisorAgent` placé entre `MemoryAgent` et le planner ; il a été retiré (commit `remove supervisor agent`) car sa sortie n'était qu'un indice textuel toujours écrasé par `ToolRouterAgent` — un appel LLM en plus, sans effet sur le graphe. **Il n'y a pas non plus de classe `PlannerAgent` séparée** : le fallback déterministe du planner est une méthode interne de `LLMPlannerAgent` (`_fallback_decision`), pas un agent à part.
+Il n'existe plus de `SupervisorAgent` ni de classe `PlannerAgent` séparée. Le
+planner LLM est le seul classificateur d'intention et contient son propre
+fallback déterministe.
+
+## 2. Graphe réel
 
 ```mermaid
 flowchart TD
-    U[Message utilisateur] --> M[MemoryAgent]
-    M --> P[LLMPlannerAgent]
+    M[MemoryAgent] --> P[LLMPlannerAgent]
     P --> T[ToolRouterAgent]
-
-    T -->|greeting| G[greeting node]
+    T -->|greeting| G[greeting technique]
     T -->|direct_answer / fallback| SU[SummaryAgent]
-    T -->|document_qa / rag| SE[SearchAgent]
-
-    SE --> H[HybridRetrieverAgent]
-    H --> RER[RerankerAgent]
-    RER --> CC[ContextCompressionAgent]
-    CC --> RAG[RAGAgent]
-
-    G --> C[LLMCriticAgent]
+    T -->|calculation / document_list| TE[ToolExecutorAgent]
+    T -->|document_qa / rag| S[SearchAgent]
+    S --> H[HybridRetrieverAgent]
+    H --> RR[RerankerAgent]
+    RR --> CC[ContextCompressionAgent]
+    CC -->|requires_rag| RAG[RAGAgent]
+    CC -->|retrieval sans génération| C[LLMCriticAgent]
+    G --> C
     SU --> C
-    RAG --> C
-    C -->|passed, ou retry déjà tenté| SG[SafetyGuardAgent]
-    C -.->|retry, route rag| PRR[prepare_rag_retry] -.-> RAG
-    C -.->|retry, route summary| PSR[prepare_summary_retry] -.-> SU
+    RAG --> CV[CitationValidatorAgent]
+    CV --> C
+    TE --> C
+    C -->|accepté| SG[SafetyGuardAgent]
+    C -->|retry rag| PR[prepare_rag_retry]
+    PR --> RAG
+    C -->|autre refus| SG
     SG --> F[FinalAnswerAgent]
-    F --> API[ChatResponse]
 ```
 
-### Tableau récapitulatif
+`prepare_summary_retry` pointe vers `SummaryAgent` et permet un seul nouvel
+essai lorsqu'une réponse directe est refusée par le critic.
 
-| # | Agent | Nœud graphe | Rôle en une ligne | Fallback si échec |
-|---|---|---|---|---|
-| 1 | `MemoryAgent` | `memory` | Charge l'historique de conversation | — (pas d'appel externe risqué) |
-| 2 | `LLMPlannerAgent` | `planner` | Décide de l'intention et du plan d'exécution | Classification déterministe par mots-clés |
-| 3 | `ToolRouterAgent` | `tool_router` | Convertit le plan en route de graphe concrète | Route `fallback` par défaut |
-| 4 | `SearchAgent` | `search` | Recherche full-text dans MongoDB Atlas | Continue avec `search_results=[]` |
-| 5 | `HybridRetrieverAgent` | `hybrid_retriever` | Fusionne full-text + recherche vectorielle | Continue avec le seul full-text |
-| 6 | `RerankerAgent` | `reranker` | Réordonne les documents (lexical + sémantique) | Retombe sur le score lexical seul |
-| 7 | `ContextCompressionAgent` | `context_compression` | Réduit le contexte avant envoi au LLM | Compression locale (déjà le mode par défaut) |
-| 8 | `SummaryAgent` | `summary` | Réponse directe sans recherche documentaire | — |
-| 9 | `RAGAgent` | `rag` | Génère une réponse ancrée dans les documents | Retombe sur `search_output` brut |
-| 10 | `LLMCriticAgent` | `critic` | Évalue qualité/pertinence/ancrage de la réponse | Bascule sur `CriticAgent` (règles déterministes) |
-| 11 | `SafetyGuardAgent` | `safety` | Masque les secrets évidents avant finalisation | — (règles locales, pas d'appel LLM par défaut) |
-| 12 | `FinalAnswerAgent` | `final_answer` | Assemble la réponse finale envoyée au frontend | — |
+## 3. Tableau synthétique
 
----
+| Agent | Mission | Pourquoi il est important | Fallback principal |
+|---|---|---|---|
+| `MemoryAgent` | reconstituer le contexte conversationnel | évite les réponses sans continuité | mémoire locale du service |
+| `LLMPlannerAgent` | comprendre l'intention et produire un plan | empêche d'exécuter toute la pipeline pour chaque demande | classification par mots-clés |
+| `ToolRouterAgent` | convertir le plan en route autorisée | transforme une décision LLM en transition déterministe | route `fallback` |
+| `ToolExecutorAgent` | exécuter calcul ou inventaire | réserve les opérations exactes aux outils, pas au LLM | résultat d'échec structuré |
+| `SearchAgent` | retrouver les correspondances lexicales | fournit la première base factuelle du RAG | aucun résultat |
+| `HybridRetrieverAgent` | ajouter la recherche sémantique | retrouve des passages malgré un vocabulaire différent | full-text seul |
+| `RerankerAgent` | remettre les meilleurs candidats en tête | réduit le bruit envoyé au générateur | classement lexical |
+| `ContextCompressionAgent` | respecter le budget de contexte | évite des prompts trop longs et préserve les labels source | compression locale |
+| `SummaryAgent` | produire les réponses non documentaires | évite de lancer le RAG pour une tâche générale | message d'indisponibilité |
+| `RAGAgent` | rédiger depuis les documents | transforme des passages en réponse utile et sourcée | résultats de recherche bruts |
+| `CitationValidatorAgent` | contrôler les labels `[n]` | détecte une réponse RAG sans références exploitables | contrôle local |
+| `LLMCriticAgent` | évaluer la réponse provisoire | ajoute une barrière qualité avant publication | `CriticAgent` local |
+| `SafetyGuardAgent` | masquer les secrets détectés | limite l'exposition accidentelle d'informations sensibles | regex locales |
+| `FinalAnswerAgent` | choisir et normaliser la sortie finale | garantit un seul contrat de réponse pour l'API | message générique |
 
-## 1. MemoryAgent
+## 4. Wrapper commun des nœuds
 
-**Fichier :** [`memory_agent.py`](../backend/app/agents/memory_agent.py) · **Nœud :** `memory` · **Premier nœud du graphe**
+`ChatWorkflow._agent_node()` reconstruit la dataclass depuis le dictionnaire
+LangGraph, met à jour le contexte de log, mesure le temps, appelle l'agent,
+enregistre son `AgentResult` puis reconvertit l'état.
 
-**Rôle :** préparer la mémoire de la conversation avant que les autres agents n'en aient besoin.
+Les nœuds `search`, `hybrid_retriever`, `reranker`, `context_compression`,
+`summary` et `rag` ont `swallow_errors=True`. Une exception y est loguée et
+transformée en résultat de repli. `memory`, `planner`, `tool_router`, `critic`,
+`tool_executor`, `citation_validator`, `safety` et `final_answer` ne sont pas
+avalés par ce wrapper, même si certains gèrent déjà leurs propres erreurs.
 
-**Fonctionnement :** injecte un `RedisMemoryService`. À l'exécution, il lit deux sources possibles :
-1. l'historique transmis par le frontend dans `ChatRequest.history` ;
-2. l'historique stocké en Redis pour ce `conversation_id` (clé gérée par `RedisMemoryService`).
+## 5. MemoryAgent
 
-Le frontend est **prioritaire** : `state.conversation_context = request_context or stored_context`. Si le frontend envoie un historique (même vide côté intention), il l'emporte sur ce qui est stocké côté serveur — ce choix garde la compatibilité avec l'UI existante.
+Fichier : `backend/app/agents/memory_agent.py`
 
-**Entrées :** `state.conversation_id`, `state.history` (venant de `ChatRequest`).
-**Sorties :** `state.conversation_context` (liste de messages `{role, content}`).
+**Rôle.** Préparer la mémoire utile au tour courant avant toute décision. Il ne
+répond pas à l'utilisateur : il alimente les agents suivants avec les échanges
+précédents.
 
-**Limite connue :** pas de mémoire sémantique longue durée — uniquement l'historique brut de la conversation courante.
+**Importance.** Sans contexte, une question comme « résume-le maintenant » ne
+peut pas être reliée au sujet précédent. MemoryAgent centralise aussi la
+différence entre l'historique envoyé par le navigateur et celui conservé dans
+Redis.
 
----
+**En cas d'échec ou d'absence.** La requête peut encore être traitée, mais comme
+une conversation neuve. La cohérence multi-tour, les références implicites et
+la personnalisation contextuelle se dégradent.
 
-## 2. LLMPlannerAgent
+Il lit deux historiques :
 
-**Fichier :** [`llm_planner_agent.py`](../backend/app/agents/llm_planner_agent.py) · **Nœud :** `planner`
+1. `state.history`, fourni par le frontend ;
+2. Redis, via `conversation:<conversation_id>:messages`.
 
-**Rôle :** transformer la demande utilisateur en plan d'exécution structuré. C'est **le seul point de classification d'intention** du workflow.
+La règle est `request_context or stored_context`. Un historique frontend non
+vide remplace donc entièrement le contexte Redis pour ce tour. Il n'y a ni
+résumé de mémoire, ni recherche sémantique dans les conversations, ni fenêtre
+maximale propre à l'agent.
 
-**Fonctionnement :**
-1. Compresse `state.conversation_context` en texte court.
-2. Appelle `LLMService.plan(user_message, conversation_history)`, qui demande au LLM un JSON validé par le modèle Pydantic `PlannerDecision` (`intent`, `requires_retrieval`, `requires_rag`, `requires_critic`, `requires_safety`, `steps`, `tools`, `reason`).
-3. Si l'appel échoue (erreur réseau, JSON invalide, validation Pydantic échouée) : bascule sur `_fallback_decision()`, une classification déterministe par mots-clés appliquée directement sur `state.user_message` :
-   - salutation (`hello`, `hi`, `bonjour`, `salut`, ...) → `intent="greeting"` ;
-   - mots liés au résumé (`summary`, `résume`, ...) → `intent="summarization"` ;
-   - mots liés à la planification (`plan`, `steps`, `roadmap`, `étapes`, ...) → `intent="planning"` ;
-   - mots liés à la correction (`correct`, `review`, `critic`, `corrige`, ...) → `intent="correction"` ;
-   - sinon, par défaut → `intent="document_qa"` avec `requires_retrieval=True`, `requires_rag=True` et le plan complet (`search_documents` → `hybrid_retrieve` → `rerank_results` → `compress_context` → `generate_grounded_answer` → `critic_review` → `safety_review` → `final_answer`).
+Sortie : `state.conversation_context` et un `AgentResult` avec les deux comptes.
 
-**Entrées :** `state.user_message`, `state.conversation_context`.
-**Sorties :** `state.planner_decision`, `state.intent`, `state.plan`, `state.tools`, `state.metadata["planner_reason"]`, `state.metadata["planner_source"]` (`"llm"` ou `"fallback"`).
+## 6. LLMPlannerAgent
 
-**Pourquoi c'est important :** le fallback n'est pas un simple filet de sécurité anecdotique — c'est la garantie que le chat continue de fonctionner même sans fournisseur LLM disponible pour le planning.
+Fichier : `backend/app/agents/llm_planner_agent.py`
 
----
+**Rôle.** Comprendre ce que demande l'utilisateur et produire une décision
+structurée : intention, étapes, outils et nécessité éventuelle de consulter les
+documents.
 
-## 3. ToolRouterAgent
+**Importance.** C'est le point de décision principal. Il évite, par exemple,
+d'envoyer une salutation vers MongoDB ou de faire calculer `2 + 2` par un modèle
+génératif. Une mauvaise décision du planner entraîne toute la suite sur une
+mauvaise branche.
 
-**Fichier :** [`tool_router_agent.py`](../backend/app/agents/tool_router_agent.py) · **Nœud :** `tool_router`
+**En cas d'échec ou de quota LLM épuisé.** Le workflow continue grâce à une
+classification locale. Elle maintient le service disponible, mais comprend
+moins bien les formulations ambiguës et classe par défaut beaucoup de demandes
+en question documentaire.
 
-**Rôle :** convertir la décision abstraite du planner en route concrète que le graphe LangGraph sait exécuter.
+Le planner transforme l'historique en texte puis appelle `LLMService.plan()`. Le
+prompt exige un JSON compatible avec `PlannerDecision` :
 
-**Fonctionnement :** lit `state.planner_decision.intent` et le mappe via une table statique (`ROUTES`) :
+- `intent` ;
+- `requires_retrieval`, `requires_rag`, `requires_critic`, `requires_safety` ;
+- `steps`, `tools`, `reason`.
+
+La sortie est validée par Pydantic. Si le fournisseur échoue, si le quota est
+épuisé ou si le JSON est invalide, `_fallback_decision()` classe localement :
+
+| Condition | Décision fallback |
+|---|---|
+| message entier dans la liste de salutations | `greeting` |
+| phrase demandant la liste du corpus | `document_list` |
+| opérateur arithmétique, ou mot de calcul avec un nombre | `calculation` |
+| mot de résumé sans mot document | `summarization`, direct |
+| mot de planification | `planning`, direct |
+| mot de correction | `correction`, direct |
+| sinon | `document_qa`, retrieval + RAG |
+
+Une demande comme « Summarize the indexed documents » reste documentaire parce
+que la présence d'un mot document empêche le fallback résumé direct.
+
+Sorties : `planner_decision`, `intent`, `plan`, `tools`, et dans `metadata`, la
+raison et la source `llm`/`fallback`.
+
+Limites : détection par sous-chaînes, salutations exactes seulement, aucun
+seuil de confiance et aucune clarification automatique du fallback.
+
+## 7. ToolRouterAgent
+
+Fichier : `backend/app/agents/tool_router_agent.py`
+
+**Rôle.** Traduire la décision du planner en une route LangGraph réellement
+autorisée.
+
+**Importance.** Il constitue une frontière de contrôle entre une sortie LLM et
+l'exécution. Le planner peut suggérer un plan, mais seul le routeur sélectionne
+une branche connue. Cela empêche un nom d'outil inventé de devenir une commande
+exécutable.
+
+**En cas d'échec ou de décision inconnue.** La route devient `fallback`, donc la
+demande part vers une réponse directe au lieu d'exécuter arbitrairement une
+recherche ou un outil.
+
+Il convertit l'intention en route. Le mapping direct couvre `greeting`,
+`direct_answer`, `summarization`, `analysis`, `correction`, `planning`,
+`calculation`, `document_list`, `document_qa` et `unknown`.
+
+Les deux flags suivants écrasent le mapping :
 
 ```python
-ROUTES = {
-    "greeting": "greeting",
-    "direct_answer": "direct_answer", "summarization": "direct_answer",
-    "analysis": "direct_answer", "correction": "direct_answer", "planning": "direct_answer",
-    "document_qa": "document_qa",
-    "unknown": "fallback",
-}
+if requires_rag:
+    route = "rag"
+elif requires_retrieval:
+    route = "document_qa"
 ```
 
-Mais les **flags du planner priment** sur ce mapping simple : si `decision.requires_rag` est vrai, la route devient `"rag"` quel que soit l'intent ; sinon si `decision.requires_retrieval` est vrai, elle devient `"document_qa"`. C'est cette route (`state.route`) que lisent ensuite les `conditional_edges` du graphe.
+`requires_critic` et `requires_safety` ne sont pas utilisés par le graphe pour
+sauter des étapes. Le champ `tools` du planner est exposé et logué, mais ne peut
+pas déclencher un outil arbitraire : les transitions et l'allowlist restent
+codées dans LangGraph.
 
-**Entrées :** `state.planner_decision`.
-**Sorties :** `state.route`, `state.intent`, `state.metadata["tool_route"]`.
+## 8. ToolExecutorAgent
 
----
+Fichier : `backend/app/agents/tool_executor_agent.py`
 
-## 4. SearchAgent
+**Rôle.** Exécuter les opérations déterministes que le LLM ne doit pas simuler :
+un calcul exact ou l'inventaire des sources indexées.
 
-**Fichier :** [`search_agent.py`](../backend/app/agents/search_agent.py) · **Nœud :** `search` (`swallow_errors=True`)
+**Importance.** Il améliore à la fois l'exactitude et la sécurité. Les opérations
+sont limitées par une allowlist et leurs résultats sont observables séparément
+dans `tool_results`.
 
-**Rôle :** recherche full-text dans MongoDB Atlas.
+**En cas d'échec.** L'agent retourne un résultat explicite en échec. Il ne
+bascule pas vers un autre outil et ne laisse pas le LLM inventer un résultat.
 
-**Fonctionnement :** envoie `state.user_message` tel quel à `SearchService.search()`, qui exécute une agrégation `$search` (Atlas Search, `compound`/`text`) sur les champs `title` (boost ×2), `snippet`, `category`, limitée à 5 résultats (valeur codée en dur — voir [RAG_SYSTEM.md](RAG_SYSTEM.md), erreur #1). Formate ensuite les résultats en texte lisible.
+Deux routes seulement sont autorisées :
 
-**Entrées :** `state.user_message`.
-**Sorties :** `state.search_results` (liste structurée de `SearchResult` : titre, snippet, score, fichier, page), `state.search_output` (texte lisible).
+- `calculation` utilise `CalculatorTool`, un parseur AST local limité aux
+  nombres et opérateurs arithmétiques ; aucun `eval` ni appel système ;
+- `document_list` utilise `DocumentListTool`, qui demande au maximum 200
+  entrées projetées à MongoDB et regroupe les pages par fichier/source.
 
-**Comportement en cas d'échec :** le nœud est configuré `swallow_errors=True` dans `chat_workflow.py` — si MongoDB est indisponible ou l'index Atlas Search n'existe pas, le workflow continue avec `search_results=[]` au lieu de planter.
+Le résultat typé est ajouté à `state.tool_results` puis utilisé comme
+`draft_answer`. Une route inconnue produit un `AgentResult` en échec sans
+exécuter d'outil ni choisir silencieusement un substitut.
 
----
+## 9. SearchAgent
 
-## 5. HybridRetrieverAgent
+Fichier : `backend/app/agents/search_agent.py`
 
-**Fichier :** [`hybrid_retriever_agent.py`](../backend/app/agents/hybrid_retriever_agent.py) · **Nœud :** `hybrid_retriever` (`swallow_errors=True`)
+**Rôle.** Effectuer la recherche lexicale initiale dans les documents indexés et
+produire des candidats structurés.
 
-**Rôle :** fusionner la recherche full-text avec la recherche vectorielle.
+**Importance.** C'est la première source de preuves du chemin RAG et la branche
+la plus robuste lorsque les embeddings sont indisponibles. Elle trouve bien les
+noms, termes et expressions présents textuellement dans le corpus.
 
-**Fonctionnement :** appelle `vector_store.similarity_search(state.user_message)`. Dans `ChatWorkflow`, ce store est toujours `MongoVectorStore` (implémentation de `VectorStorePort`, Atlas Vector Search sur le champ `embedding`, 384 dimensions) — la recherche vectorielle est donc **active par défaut**, pas seulement une interface préparée. Fusionne ensuite `full_text_results + vector_results` :
-- déduplique par clé `(titre, fichier ou source, page)` ;
-- trie par score décroissant ;
-- tronque à `limit` (8 par défaut).
+**En cas d'échec MongoDB ou Atlas Search.** Le graphe continue avec une liste
+vide. Les étapes suivantes ne peuvent alors pas fabriquer de preuves et le RAG
+doit annoncer qu'aucun document pertinent n'a été trouvé.
 
-**Entrées :** `state.search_results` (déjà rempli par `SearchAgent`), `state.user_message`.
-**Sorties :** `state.search_results` (remplacé par la version fusionnée/dédupliquée), `state.retrieval_metrics.full_text_count/vector_count/hybrid_count`.
+Il transmet le message brut à `SearchService.search()`. La pipeline Atlas Search
+cherche dans :
 
-**Comportement en cas d'échec :** si Mongo est injoignable ou le calcul d'embedding de la requête échoue, `MongoVectorStore.similarity_search` retourne `[]` — l'agent continue avec les seuls résultats full-text (dégradation silencieuse).
+- `title`, boost 2 ;
+- `snippet` ;
+- `category`.
 
-**Limite connue :** risque de collision de déduplication pour les documents CSV (clé de dédup incomplète) — détail dans [RAG_SYSTEM.md](RAG_SYSTEM.md), erreur #3.
+La limite est fixée à 5 dans le service. L'agent conserve les `SearchResult`
+structurés et produit aussi `search_output`, un texte avec titre, fichier, page
+et snippet.
 
----
+Si MongoDB ou l'index Search échoue, le wrapper du nœud remplace les résultats
+par une liste vide et laisse le graphe continuer.
 
-## 6. RerankerAgent
+## 10. HybridRetrieverAgent
 
-**Fichier :** [`reranker_agent.py`](../backend/app/agents/reranker_agent.py) · **Nœud :** `reranker` (`swallow_errors=True`)
+Fichier : `backend/app/agents/hybrid_retriever_agent.py`
 
-**Rôle :** réordonner et filtrer les documents avant de les envoyer au LLM.
+**Rôle.** Combiner les résultats lexicaux avec une recherche vectorielle fondée
+sur la proximité sémantique.
 
-**Fonctionnement :** combine deux scores par document :
-1. **Score lexical** (toujours calculé) : score full-text brut + `0.25` par mot de la question retrouvé dans le titre/snippet.
-2. **Score sémantique** (si `SEMANTIC_RERANKER_ENABLED=true`) : similarité cosinus entre l'embedding de la question et celui du document, calculée en un seul appel batch via `HuggingFaceEmbeddingService`.
+**Importance.** Il augmente le rappel : une question peut retrouver un passage
+pertinent même si elle n'utilise pas exactement les mêmes mots. Il sert donc de
+pont entre la formulation utilisateur et le vocabulaire du corpus.
 
-Score final = `lexical + 2.0 × cosinus` (`SEMANTIC_WEIGHT = 2.0`, valeur fixée arbitrairement — voir [RAG_SYSTEM.md](RAG_SYSTEM.md), erreur #6). Trie et tronque à `MAX_RAG_DOCUMENTS`.
+**En cas d'échec Hugging Face, embedding ou Vector Search.** Les résultats
+full-text restent disponibles. La réponse peut être moins complète, mais la
+pipeline documentaire n'est pas bloquée.
 
-**Entrées :** `state.search_results`, `state.user_message`.
-**Sorties :** `state.reranked_results`, métriques `retrieved_count`, `reranked_count`, `top_score`, `sources_used`, `semantic_reranking_used`.
+Dans le workflow de production, son `VectorStorePort` est un
+`MongoVectorStore`, pas le `NullVectorStore` utilisé par défaut quand l'agent est
+instancié isolément.
 
-**Comportement en cas d'échec :** si l'appel d'embeddings échoue (quota, timeout, modèle indisponible), repli silencieux sur le score lexical seul — aucune exception ne remonte à l'utilisateur.
+Le store :
 
----
+1. calcule l'embedding de la requête via Hugging Face ;
+2. exécute `$vectorSearch` sur le champ `embedding` ;
+3. demande `numCandidates=max(limit*10, 50)` et jusqu'à 8 résultats.
 
-## 7. ContextCompressionAgent
+L'agent concatène full-text puis vectoriel, déduplique par
+`(title, file_name or source, page_number)`, trie tous les scores bruts par ordre
+décroissant et garde 8 candidats.
 
-**Fichier :** [`context_compression_agent.py`](../backend/app/agents/context_compression_agent.py) · **Nœud :** `context_compression` (`swallow_errors=True`)
+Attention : les scores Atlas Search et Vector Search ne sont pas sur une échelle
+commune. Leur tri direct n'est pas une vraie fusion de rang. La première version
+d'un doublon gagne ; le score des deux branches n'est pas combiné.
 
-**Rôle :** réduire le contexte documentaire envoyé au LLM pour maîtriser coût et taille de prompt.
+Métriques : `full_text_count`, `vector_count`, `hybrid_count`.
 
-**Fonctionnement :** prend `state.reranked_results` (ou `search_results` en repli), garde les labels source (titre/fichier/page) et tronque progressivement les snippets pour respecter `MAX_RAG_CONTEXT_CHARS` (4000 par défaut). Deux modes :
-- `use_llm=False` (mode réellement actif dans `ChatWorkflow`) : compression locale, troncature caractère par caractère document par document, puis une seconde troncature dure sur la chaîne finale assemblée.
-- `use_llm=True` : demanderait à `LLMService.compress_context()` de sélectionner les passages utiles — ce mode existe dans le code mais n'est **jamais activé** par défaut.
+## 11. RerankerAgent
 
-**Entrées :** `state.reranked_results` / `state.search_results`.
-**Sorties :** `state.compressed_context`, `state.retrieval_metrics.compressed_context_chars`.
+Fichier : `backend/app/agents/reranker_agent.py`
 
-**Limite connue :** la troncature est naïve, pas une sélection intelligente — une information pertinente située après le point de coupure dans un snippet long est perdue sans signal. Détail : [RAG_SYSTEM.md](RAG_SYSTEM.md), erreurs #5 et #7.
+**Rôle.** Réordonner et limiter les candidats selon leur correspondance avec la
+question.
 
----
+**Importance.** Le générateur dispose d'un contexte limité. Placer les passages
+les plus utiles en premier réduit le bruit, améliore les citations et évite de
+gaspiller le budget sur des résultats seulement vaguement liés.
 
-## 8. SummaryAgent
+**En cas d'échec du reranking sémantique.** Le score lexical local reste actif.
+La qualité du classement peut baisser, mais les documents ne sont pas perdus.
 
-**Fichier :** [`summary_agent.py`](../backend/app/agents/summary_agent.py) · **Nœud :** `summary` (`swallow_errors=True`)
+Il filtre d'abord `score >= min_score` (`0.0` par défaut), puis calcule :
 
-**Rôle :** produire une réponse directe **sans** recherche documentaire.
-
-**Fonctionnement :** malgré son nom, ne fait pas qu'un résumé au sens strict — appelle `LLMService.summarize(user_message, conversation_context)`, dont le prompt demande au LLM de répondre directement à la question en tenant compte du contexte de conversation. Utilisé pour les réponses directes, résumés, corrections, demandes générales et comme fallback quand la route n'est ni `greeting` ni documentaire.
-
-**Entrées :** `state.user_message`, `state.conversation_context`.
-**Sorties :** `state.summary_output`, `state.draft_answer` (important : c'est ce que le critic et le safety guard analysent quand le workflow ne passe pas par RAG).
-
----
-
-## 9. RAGAgent
-
-**Fichier :** [`rag_agent.py`](../backend/app/agents/rag_agent.py) · **Nœud :** `rag` (`swallow_errors=True`)
-
-**Rôle :** générer une réponse ancrée dans les documents récupérés.
-
-**Fonctionnement :**
-1. Utilise `state.reranked_results` (ou `search_results` en repli) comme source de vérité.
-2. **Garde-fou anti-hallucination** : si aucun document n'est disponible, renvoie directement un message explicite (« I could not find relevant indexed documents... ») **sans jamais appeler le LLM**.
-3. Sinon, construit le contexte (`compressed_context` en priorité, sinon formatage direct des documents) et appelle `LLMService.grounded_answer(question, documents, historique)` — un prompt qui interdit explicitement au LLM de répondre en dehors des documents fournis.
-4. Ajoute toujours une section `Sources:` (3 meilleurs documents) à la réponse, que l'appel LLM réussisse ou échoue.
-
-**Entrées :** `state.reranked_results`/`search_results`, `state.compressed_context`, `state.conversation_context`.
-**Sorties :** `state.rag_output`, `state.draft_answer`.
-
-**Comportement en cas d'échec :** si `grounded_answer()` échoue, retombe sur `state.search_output` brut plutôt que de planter tout le workflow.
-
-**Limite connue :** `metadata["sources_count"]` utilise `len(state.search_results)` (résultats bruts) et non `len(documents)` réellement utilisés après reranking — métrique trompeuse. Détail : [RAG_SYSTEM.md](RAG_SYSTEM.md), erreur #4.
-
----
-
-## 10. LLMCriticAgent
-
-**Fichier :** [`llm_critic_agent.py`](../backend/app/agents/llm_critic_agent.py) · **Nœud :** `critic` (déclaré sous le nom `"CriticAgent"` dans `chat_workflow.py`, sans `swallow_errors`)
-
-**Rôle :** contrôler la qualité de la réponse provisoire avant de la laisser sortir.
-
-**Fonctionnement :** prend la meilleure réponse candidate disponible (`draft_answer` > `rag_output` > `summary_output` > `search_output` > `final_answer`) et appelle `LLMService.critic_review(user_message, draft_answer, sources)`, qui retourne un `CriticReview` structuré : `passed`, `score`, `groundedness_score`, `relevance_score`, `clarity_score`, `issues`, `recommendation` (`accept`/`revise`/`retrieve_more`/`fallback`), `feedback`.
-
-**Fallback si le LLM échoue :** délègue à `CriticAgent` (voir section support ci-dessous), puis reconstruit un `CriticReview` synthétique à partir de son verdict binaire.
-
-**Entrées :** `state.draft_answer`/`rag_output`/`summary_output`, `state.compressed_context`/`search_output` (comme "sources").
-**Sorties :** `state.critic_passed`, `state.critic_feedback`, `state.critic_score`, `state.evaluation["critic"]`.
-
-**Conséquence directe :** c'est cette sortie qui pilote le routage post-critic dans `chat_workflow.py` — accepté → safety ; refusé + pas encore de retry → `prepare_rag_retry`/`prepare_summary_retry` ; refusé + retry déjà tenté → safety quand même (boucle bornée à une tentative).
-
----
-
-## 11. SafetyGuardAgent
-
-**Fichier :** [`safety_guard_agent.py`](../backend/app/agents/safety_guard_agent.py) · **Nœud :** `safety` (sans `swallow_errors`)
-
-**Rôle :** dernier garde-fou avant la finalisation — détecter et masquer les secrets évidents.
-
-**Fonctionnement :** applique trois regex sur la réponse candidate :
-
-```python
-SECRET_PATTERNS = [
-    r"(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*['\"]?([A-Za-z0-9_\-]{12,})",
-    r"(?i)bearer\s+[A-Za-z0-9_\-.]{20,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-]
+```text
+lexical = score d'entrée + 0.25 × nombre de termes présents
+final = lexical + 2.0 × similarité_cosinus
 ```
 
-Toute correspondance est remplacée par `[REDACTED_SECRET]`. Une revue LLM optionnelle existe (`use_llm=True`) pour une analyse plus nuancée, mais **n'est pas activée par défaut** dans `ChatWorkflow` — le comportement réel est purement local (regex), donc rapide et sans coût LLM.
+Les termes sont des séquences ASCII alphanumériques de plus de deux caractères.
+Les accents et la morphologie ne sont pas normalisés. Le service d'embeddings
+recalcule les embeddings de tous les textes candidats à chaque requête, même si
+un embedding est déjà stocké dans MongoDB.
 
-**Entrées :** `state.final_answer`/`draft_answer`/`rag_output`/`summary_output`.
-**Sorties :** `state.safety_passed`, `state.safety_feedback`, `state.evaluation["safety"]` ; si rédaction, propage la version nettoyée vers `draft_answer`, `rag_output`, `summary_output`, `final_answer`.
+Si `SEMANTIC_RERANKER_ENABLED=false`, aucun service d'embedding n'est injecté.
+En cas d'échec HF, l'agent continue avec le lexical. Il garde
+`MAX_RAG_DOCUMENTS` résultats et expose `sources_used`, `top_score` et
+`semantic_reranking_used`.
 
-**Limite connue :** reste léger — ne remplace pas une politique DLP complète, une revue de prompt injection ou un audit de logs.
+## 12. ContextCompressionAgent
 
----
+Fichier : `backend/app/agents/context_compression_agent.py`
 
-## 12. FinalAnswerAgent
+**Rôle.** Transformer les meilleurs documents en un contexte compact, numéroté
+et compatible avec la limite du prompt RAG.
 
-**Fichier :** [`final_answer_agent.py`](../backend/app/agents/final_answer_agent.py) · **Nœud :** `final_answer` (dernier nœud avant `END`)
+**Importance.** Il contrôle la taille, le coût et la latence de génération tout
+en conservant les labels `[n]` nécessaires aux citations. Sans lui, un corpus
+volumineux peut dépasser la fenêtre du modèle ou noyer l'information utile.
 
-**Rôle :** assembler la réponse finale envoyée au frontend. Ne génère aucun nouveau contenu — un pur agrégateur.
+**En cas d'échec.** Le wrapper conserve un chemin dégradé à partir des résultats
+existants. Dans la configuration actuelle, la compression étant locale, elle ne
+dépend pas du quota LLM.
 
-**Fonctionnement :** choisit la première réponse non vide dans cet ordre de priorité : `final_answer` (déjà défini par le safety guard si rédaction) → `draft_answer` → `rag_output` → `summary_output` → `search_output` → message générique de repli. Ajoute ensuite, si pertinent :
-- une note `Safety note: ...` si `safety_passed=False` ;
-- une note `Validation note: ...` si `critic_passed=False` et que le feedback n'est pas simplement `"OK"`.
+Il prend `reranked_results` ou, à défaut, `search_results`. Le workflow le crée
+avec `use_llm=False`, donc le chemin actif est `_local_compress()` :
 
-**Entrées :** tous les champs de sortie précédents de `GraphState`.
-**Sorties :** `state.final_answer` (repris tel quel par `ChatWorkflow.run()` comme `ChatResponse.answer`).
+- labels `[n]`, titre, fichier et page conservés ;
+- budget de snippet entre 200 et 900 caractères selon l'espace restant ;
+- arrêt lorsque le prochain bloc ne tient plus ;
+- tranche finale à `MAX_RAG_CONTEXT_CHARS`.
 
----
+Le mode `LLMService.compress_context()` existe, avec fallback local, mais n'est
+pas activé par le conteneur actuel.
 
-## Agent de secours interne : CriticAgent
+## 13. SummaryAgent
 
-**Fichier :** [`critic_agent.py`](../backend/app/agents/critic_agent.py) · **N'est pas un nœud du graphe** — instancié et appelé directement par `LLMCriticAgent`.
+Fichier : `backend/app/agents/summary_agent.py`
 
-**Rôle :** validation locale, déterministe et bornée, utilisée uniquement si le critic LLM échoue.
+**Rôle.** Générer les réponses qui ne nécessitent pas le corpus : explication
+générale, correction, réécriture, planification ou résumé non documentaire.
 
-**Fonctionnement :** applique des règles simples sur la réponse candidate :
-- réponse non vide ? sinon → `"No draft answer was produced."`
-- route `rag`/`parallel` mais `search_results` vide ? sinon → `"...expects document grounding, but no document was found."`
-- route documentaire mais pas de section `"Sources:"` dans la réponse ? sinon → note sur les sources manquantes.
-- réponse de moins de 12 caractères ? sinon → `"...too short to be useful."`
+**Importance.** Il sépare clairement connaissance générale et connaissance
+documentaire. Le RAG reste réservé aux affirmations qui doivent être ancrées
+dans les documents indexés.
 
-`critic_passed` devient vrai seulement si aucune de ces règles n'a déclenché de remarque.
+**En cas d'échec ou de quota LLM épuisé.** Le wrapper produit un message
+d'indisponibilité. Il n'existe pas encore de véritable générateur local pour
+remplacer cette réponse directe.
 
----
+Le nom est historique : cet agent produit une réponse directe, pas uniquement un
+résumé. Son prompt couvre questions générales, correction, réécriture,
+planification et résumé. Il demande la langue de l'utilisateur, la conservation
+des valeurs exactes et la séparation faits/hypothèses.
 
-## Nœuds techniques sans agent dédié
+Il utilise `state.conversation_context`, appelle le modèle de capacité
+`SUMMARIZATION`, puis écrit `summary_output` et `draft_answer`.
 
-Trois nœuds du graphe n'ont pas de classe d'agent propre — ils sont définis directement dans `chat_workflow.py` :
+Si l'appel LLM lève une exception, le wrapper `swallow_errors` remplit seulement
+`summary_output` avec un message d'indisponibilité. `draft_answer` peut rester
+vide ; `FinalAnswerAgent` pourra néanmoins choisir `summary_output`.
 
-- **`greeting`** : construit une réponse de salutation statique (« Hello, bonjour. How can I help you? ... ») et la place dans `final_answer`/`draft_answer`. Ne fait aucun appel externe.
-- **`prepare_rag_retry`** : marque `state.correction_attempted = True`, enregistre un `AgentResult` explicatif, puis renvoie vers `RAGAgent`. Utilisé quand le critic refuse une réponse issue de la route `rag`.
-- **`prepare_summary_retry`** : même mécanisme, mais renvoie vers `SummaryAgent`. Utilisé quand le critic refuse une réponse issue d'une route directe (`summary`/`simple_llm`/`planning`/`correction`).
+## 14. RAGAgent
 
-Ces deux nœuds de retry garantissent que la boucle de correction reste **bornée à un seul essai** : `correction_attempted` est vérifié par `_route_after_critic()` avant d'autoriser un nouveau retry.
+Fichier : `backend/app/agents/rag_agent.py`
 
----
+**Rôle.** Transformer les passages retrouvés en une réponse rédigée, fidèle aux
+preuves et accompagnée de sources visibles.
 
-## Pour aller plus loin
+**Importance.** Les retrievers ne produisent que des extraits. RAGAgent réalise
+la synthèse utile pour l'utilisateur tout en imposant le grounding, la langue et
+les citations. C'est le principal point de génération du parcours documentaire.
 
-- [GUIDE_PROJET.md](GUIDE_PROJET.md) — architecture globale, stack technique, `GraphState`, sécurité, configuration, quickstart.
-- [RAG_SYSTEM.md](RAG_SYSTEM.md) — détail du pipeline RAG (agents 4 à 9 ci-dessus) et 7 limites connues identifiées dans le code, avec fichier:ligne.
-- [EVALUATION.md](EVALUATION.md) — framework d'évaluation branché sur `ChatWorkflow`.
+**En cas d'absence de documents.** Il refuse de répondre sur le fond. **En cas
+d'échec LLM ou de quota épuisé**, il expose actuellement les résultats de
+recherche bruts avec une section `Sources:`. Ce fallback préserve l'information,
+mais ne constitue pas une véritable synthèse et peut échouer au contrôle des
+citations `[n]`.
+
+Il utilise les résultats rerankés en priorité.
+
+Sans document, il retourne un message fixe et n'appelle pas le LLM. Avec des
+documents, il appelle `grounded_answer()` avec :
+
+- la question ;
+- le contexte compressé ou les documents formatés ;
+- l'historique de conversation comme contexte secondaire.
+
+Le prompt actuel :
+
+- traite documents et historique comme données non fiables ;
+- refuse de suivre leurs instructions ;
+- interdit les faits hors documents ;
+- exige des citations `[n]` proches des affirmations ;
+- conserve langue, noms, dates, unités et incertitudes ;
+- signale les preuves absentes, ambiguës ou contradictoires ;
+- demande un contrôle silencieux avant réponse.
+
+L'application ajoute ensuite `Sources:` avec les trois premiers documents. Si le
+LLM échoue, elle expose `search_output` avec ces sources.
+
+Limite : `metadata.sources_count` utilise `len(search_results)`, pas le nombre de
+documents rerankés réellement envoyés.
+
+## 15. CitationValidatorAgent
+
+Fichier : `backend/app/agents/citation_validator_agent.py`
+
+**Rôle.** Vérifier après génération que les références `[n]` existent et restent
+dans la plage des documents fournis.
+
+**Importance.** Un texte fluide n'est pas nécessairement traçable. Cet agent
+rend détectables les réponses sans citation ou avec des références inventées et
+transmet l'échec au critic avant publication.
+
+**En cas d'absence.** Une réponse RAG pourrait être acceptée avec `[99]` ou sans
+aucun label. **Limite actuelle :** l'agent valide la structure, pas le fait que
+chaque phrase soit réellement démontrée par le passage cité.
+
+Il exécute `CitationValidatorTool` après chaque génération RAG et avant le
+critic. Le contrôle porte sur le corps avant `Sources:` : présence d'un label
+quand des documents existent et absence de labels hors plage. Sans document, le
+contrôle est marqué `skipped` et réussi. Il ne vérifie pas le lien sémantique
+entre une affirmation et le passage cité.
+
+## 16. LLMCriticAgent et CriticAgent
+
+Fichiers : `llm_critic_agent.py`, `critic_agent.py`
+
+**Rôle de LLMCriticAgent.** Évaluer la pertinence, la clarté et le grounding de
+la réponse provisoire, puis recommander acceptation, révision ou fallback.
+
+**Rôle de CriticAgent.** Fournir une vérification déterministe minimale lorsque
+le LLM critic est indisponible. Il contrôle surtout la forme et la présence des
+éléments attendus.
+
+**Importance.** Ensemble, ils empêchent qu'une génération devienne
+automatiquement la réponse finale. Le critic est la barrière qualité et le point
+de décision des retries.
+
+**En cas d'échec LLM ou de quota épuisé.** Le critic local maintient le workflow,
+mais ses scores sont heuristiques. Il ne peut pas prouver la factualité ou le
+support sémantique d'une affirmation.
+
+Le critic choisit la première réponse candidate parmi `draft_answer`, RAG,
+summary, search et final. Les sources sont le contexte compressé ou le texte de
+search. Le LLM retourne un `CriticReview` validé : verdict, score global, scores
+de grounding/pertinence/clarté, problèmes, recommandation et feedback.
+
+En cas d'échec, `CriticAgent` applique quatre règles :
+
+- réponse non vide ;
+- documents présents pour une route RAG ;
+- section `Sources:` présente pour une route RAG documentée ;
+- au moins 12 caractères.
+
+Le fallback produit des scores synthétiques `1.0` en cas de succès ou des scores
+fixes bas en cas d'échec ; ce ne sont pas des mesures empiriques.
+
+### Routage après critique
+
+- verdict positif → safety ;
+- route `rag`/`parallel` + documents + aucun retry → `prepare_rag_retry` ;
+- retry déjà tenté → safety ;
+- sinon → safety.
+
+Une route `direct_answer`, `summary`, `simple_llm`, `planning` ou `correction`
+refusée déclenche un seul passage par `prepare_summary_retry`. Les routes outils
+refusées vont directement au safety : elles ne sont pas régénérées par un LLM.
+
+## 17. SafetyGuardAgent
+
+Fichier : `backend/app/agents/safety_guard_agent.py`
+
+**Rôle.** Inspecter la réponse retenue et masquer certains formats de secrets
+avant qu'elle ne quitte le backend.
+
+**Importance.** C'est la dernière barrière spécialisée contre l'exposition
+accidentelle de clés, tokens ou mots de passe présents dans une génération.
+
+**En cas d'absence.** Un secret reconnu dans la réponse pourrait être envoyé tel
+quel au navigateur. **Limite actuelle :** ce n'est pas un système complet de
+modération, de détection de données personnelles ou de contrôle d'autorisation.
+
+Le mode actif applique des regex à la réponse candidate : affectations de
+`api_key`/`secret`/`password`/`token`, Bearer long et début de clé privée. Les
+correspondances deviennent `[REDACTED_SECRET]` et la version masquée est propagée
+vers les champs de réponse.
+
+`passed=false` signifie ici qu'un secret potentiel a été détecté et masqué. Le
+contenu n'est pas bloqué entièrement. Le mode LLM optionnel est désactivé.
+
+Ce garde-fou ne couvre pas tous les formats de secrets, la toxicité, les données
+personnelles, les permissions, les attaques indirectes ou les sorties brutes des
+autres agents.
+
+## 18. FinalAnswerAgent
+
+Fichier : `backend/app/agents/final_answer_agent.py`
+
+**Rôle.** Choisir la meilleure sortie encore disponible, ajouter les notes de
+validation/sécurité nécessaires et remplir `final_answer`.
+
+**Importance.** Les branches précédentes écrivent dans des champs différents.
+Cet agent les rassemble derrière un contrat unique, ce qui simplifie l'API, le
+cache et le frontend.
+
+**En cas de sorties intermédiaires vides.** Il fournit un message générique au
+lieu de retourner une réponse vide. Il ne répare cependant ni le contenu ni les
+sources : il finalise ce que les agents précédents ont produit.
+
+Ordre de sélection :
+
+```text
+final_answer → draft_answer → rag_output → summary_output
+→ search_output → fallback générique
+```
+
+Il ajoute une `Safety note` si le safety n'est pas passé et une
+`Validation note` si le critic a refusé avec un feedback non trivial. Il ne fait
+aucun appel LLM et ne vérifie pas les sources.
+
+## 19. Nœuds techniques
+
+### greeting
+
+Produit une salutation bilingue statique, remplit `final_answer` et
+`draft_answer`, puis va tout de même au critic et au safety.
+
+**Importance.** Répondre localement à une salutation évite un appel LLM et une
+recherche documentaire inutiles.
+
+### prepare_rag_retry
+
+Fixe `correction_attempted=true`, enregistre `critic_retry`, puis renvoie au RAG.
+Il ne modifie ni le prompt, ni les documents, ni le feedback transmis au RAG ; le
+second appel peut donc reproduire la première réponse.
+
+**Importance.** Il borne la correction à une tentative et empêche une boucle
+infinie. Lors d'un quota fournisseur épuisé, ce retry reste actuellement inutile
+et provoque un second appel voué au même échec.
+
+### prepare_summary_retry
+
+Même mécanisme vers SummaryAgent, utilisé au maximum une fois pour les réponses
+directes refusées.
+
+**Importance.** Il donne une seconde chance aux réponses générales refusées par
+le critic tout en garantissant la terminaison du graphe.
+
+## 20. Lecture du cockpit
+
+- `agents_used` montre les noms uniques, pas le nombre d'exécutions.
+- `agent_results` conserve chaque exécution ; un retry peut donc créer plusieurs
+  résultats portant le même `agent`.
+- `tool_results` expose séparément le nom, le statut, la sortie et les
+  métadonnées de chaque outil déterministe.
+- `evaluation.latency_ms` est indexé par nom de nœud : un retry du même nœud
+  écrase la latence précédente au lieu de les additionner.
+- `trace_id` est actuellement le `conversation_id` stocké comme
+  `transaction_id` dans `GraphState`, alors que le logger génère séparément un
+  autre transaction id contextuel. Les deux identifiants ne sont pas équivalents.
+
+## 21. Ajouter ou modifier un agent
+
+1. Créer ou modifier la classe dans `backend/app/agents/`.
+2. Déclarer tout nouveau champ dans `GraphState` et `GraphStateDict`.
+3. Instancier l'agent dans `ChatWorkflow.__init__`.
+4. Ajouter le nœud et ses transitions dans `_build_graph()`.
+5. Décider explicitement si les erreurs doivent être avalées.
+6. Ajouter des tests de chemin, de fallback et de forme de `ChatResponse`.
+7. Mettre à jour ce document, [FONCTIONNEMENT.md](FONCTIONNEMENT.md) et, si le
+   retrieval change, [RAG_SYSTEM.md](RAG_SYSTEM.md).

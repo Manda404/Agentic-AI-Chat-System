@@ -4,7 +4,7 @@
 
 **Une plateforme RAG agentique, multi-agent et observable, construite avec FastAPI, LangGraph, Redis Cloud, MongoDB Atlas et Next.js.**
 
-<img src="gitimg/1.png" alt="Chat Interface" width="600"/>
+<img src="gitimg/Architecture-v0.png" alt="Chat Interface" width="600"/>
 
 <img src="gitimg/Architecture-v2.png" alt="System Overview" width="600"/>
 

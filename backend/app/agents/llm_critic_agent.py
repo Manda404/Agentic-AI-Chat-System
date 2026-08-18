@@ -56,6 +56,20 @@ class LLMCriticAgent:
             )
             source = "fallback"
 
+        citation_validation = state.evaluation.get("citation_validation")
+        if state.route == "rag" and citation_validation and not citation_validation.get("passed", False):
+            citation_issue = "RAG citation validation failed."
+            review = review.model_copy(
+                update={
+                    "passed": False,
+                    "score": min(review.score, 0.6),
+                    "groundedness_score": min(review.groundedness_score, 0.4),
+                    "issues": [*review.issues, citation_issue],
+                    "recommendation": "revise",
+                    "feedback": f"{review.feedback} {citation_issue}".strip(),
+                }
+            )
+
         # Le workflow lit ces champs pour décider retry ou finalisation.
         state.critic_passed = review.passed
         state.critic_feedback = review.feedback

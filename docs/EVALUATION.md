@@ -1,75 +1,219 @@
-# Évaluation
+# Tests et évaluation
 
-Mini framework d'évaluation, sans dépendance externe, dans [`backend/app/evaluation/`](../backend/app/evaluation/). Vue d'ensemble du reste du projet : [GUIDE_PROJET.md](GUIDE_PROJET.md).
+> Inventaire vérifié et commandes exécutées le **18 août 2026**.
 
-## Fichiers
+## 1. État vérifié
 
-- `cases.py` : `DEFAULT_EVALUATION_CASES`, 6 cas couvrant greeting, question documentaire, question hors périmètre, résumé, correction, demande ambiguë.
-- `metrics.py` : `score_response()` vérifie route attendue, réponse non vide, présence de sources (`"Sources:"` dans la réponse ou `sources_used`/`documents` dans les métadonnées d'un agent) et observation du critic.
-- `evaluator.py` : `WorkflowEvaluator.run_cases()`, exécuteur branchable directement sur une instance de `ChatWorkflow` — appelle `workflow.run()` pour chaque cas et agrège les métriques.
+```bash
+make test
+# Ran 22 tests ... OK
 
-## Ce Qui Est Vérifié
+cd frontend
+npm run build
+# compilation, lint/type checking et génération statique : OK
+```
 
-- route attendue (`expected_route`) ;
+Le build frontend n'est pas un test fonctionnel du navigateur. Il vérifie la
+compilation Next.js et les types, pas les appels à l'API ni les interactions UI.
+
+## 2. Tests backend isolés
+
+La suite utilise `unittest` et `IsolatedAsyncioTestCase`.
+
+| Fichier | Couverture réelle |
+|---|---|
+| `test_langgraph_workflow.py` | compilation, appels d'agents, greeting, chemins RAG/outils, citation validator, retry direct, critic/safety, rédaction de secret |
+| `test_data_reset.py` | reset Redis en conservant les comptes, suppression MongoDB sans supprimer collection/index |
+| `test_prompt_contracts.py` | inventaire des prompts, JSON structuré, résumé documentaire via RAG, contraintes compressor/reranker |
+| `test_rag_prompt.py` | séparation question/documents/historique, grounding, citations, langue, calculs et injection indirecte |
+| `test_tools.py` | calcul AST sûr, refus d'exécution de code, inventaire documentaire et validation structurelle des citations |
+
+Les tests du workflow utilisent des fakes pour le LLM, la mémoire et le search.
+Ils ne contactent normalement ni Redis ni MongoDB et ne mesurent pas la qualité
+des réponses d'un vrai modèle.
+
+### Langfuse pendant les tests
+
+Si le fichier `backend/.env` contient `LANGFUSE_ENABLED=true`, les décorateurs
+sont activés dès l'import des modules. Même avec des fakes, une tentative
+d'export de traces peut apparaître en fin de test. Pour une exécution isolée :
+
+```bash
+LANGFUSE_ENABLED=false make test
+```
+
+### Ce qui n'est pas couvert
+
+- routes FastAPI avec un vrai client HTTP ;
+- JWT expiré, `/auth/me` et restauration de session frontend ;
+- cache hit et invalidation ;
+- exécution complète d'un second appel LLM pendant les retries critic ;
+- panne Redis après démarrage ;
+- ingestion réelle PDF/CSV, doublons, taille de fichier ;
+- CORS, rate limit et headers ;
+- composants/interactions frontend ;
+- charge, concurrence et régression de performance async.
+
+## 3. Évaluateur bout en bout du workflow
+
+Fichiers :
+
+- `backend/app/evaluation/cases.py` ;
+- `backend/app/evaluation/metrics.py` ;
+- `backend/app/evaluation/evaluator.py`.
+
+`DEFAULT_EVALUATION_CASES` contient 6 scénarios : greeting, question
+documentaire, hors corpus, résumé, correction et demande ambiguë.
+`WorkflowEvaluator.run_cases()` appelle une vraie instance de `ChatWorkflow` et
+évalue :
+
+- égalité de route ;
 - réponse non vide ;
-- présence de sources quand `expect_sources=True` ;
-- `critic_passed` observé, et comparé à `expect_critic_passed` si le cas le précise ;
-- compatibilité `ChatResponse`.
+- présence de sources lorsque demandée ;
+- verdict critic attendu lorsque le cas le précise.
 
-## Limite actuelle
+Il n'existe pas actuellement de CLI ou de cible Make dédiée à cet évaluateur.
+Il faut l'instancier depuis un script ou un test.
 
-Le framework exécute le vrai `ChatWorkflow` (donc de vrais appels LLM/Redis/MongoDB si branchés) — ce n'est pas un jeu de tests unitaires isolé, mais un outil de vérification de bout en bout à lancer manuellement. Il vérifie le *comportement* (route, présence de réponse, critic observé), pas la *qualité du retrieval* — pour ça, voir la section suivante.
+### Limite de `critic_observed`
 
-## Benchmark de qualité du retrieval (Precision / Recall / MRR / NDCG)
+`score_response()` calcule :
 
-Le module `evaluator.py` ci-dessus ne dit pas si les **bons documents** remontent, ni dans le **bon ordre** — seulement si une réponse a été produite. `backend/app/evaluation/retrieval_benchmark.py` comble ce manque avec des métriques standard de recherche d'information (IR) mesurées à trois étages du pipeline :
+```python
+response.critic_passed or response.critic_passed is False
+```
 
-- `full_text` : `SearchAgent` seul (MongoDB Atlas Search, mots-clés) ;
-- `hybrid` : + `HybridRetrieverAgent` (fusion avec la recherche vectorielle) ;
-- `reranked` : + `RerankerAgent` (score lexical + sémantique, troncature finale — ce qui atteint réellement le LLM).
+Comme `critic_passed` est toujours un booléen dans `ChatResponse`, cette
+expression vaut toujours `True`. La métrique ne prouve donc pas que le critic a
+réellement été exécuté. Pour cela, il faudrait vérifier `agents_used`,
+`agent_results` ou la présence d'une évaluation critic.
 
-### Fichiers
+### Limites générales
 
-- `retrieval_cases.py` : le jeu de référence (`GOLD_RETRIEVAL_CASES`) — 10 questions associées aux titres de documents attendus, construites sur le CSV d'exemple du projet (`backend/data/ai_tooling_catalog.csv`). Deux cas ont plusieurs documents pertinents ou un piège proche en sens (ex: modèle local vs modèle hébergé), pour éviter un jeu de test trop facile.
-- `retrieval_metrics.py` : `precision_at_k`, `recall_at_k`, `reciprocal_rank` (→ MRR une fois moyenné), `ndcg_at_k`. Pertinence binaire, sans dépendance externe.
-- `retrieval_benchmark.py` : instancie les **vrais** agents de production (`HybridRetrieverAgent`, `RerankerAgent`), câblés exactement comme `ChatWorkflow.__init__`, et les exécute contre MongoDB Atlas pour chaque cas.
+- les routes produites par un vrai planner LLM peuvent varier ;
+- les résultats dépendent des données et services externes ;
+- aucune réponse de référence n'est comparée ;
+- aucune mesure de factualité, style ou groundedness n'est calculée.
 
-### Pourquoi ce n'est pas un test avec des fakes
+## 4. Benchmark de retrieval
 
-Un benchmark de qualité du retrieval contre des données simulées ne mesurerait rien de réel — c'est justement le comportement du *vrai* index Atlas Search, du *vrai* index Atlas Vector Search et du *vrai* reranking qui est en jeu. Prérequis avant de lancer :
+Fichiers :
 
-1. `MONGODB_URI` valide dans `.env` ;
-2. le jeu de données d'exemple déjà ingéré : `POST /ingest/sample-data` (ou tes propres documents + tes propres cas ajoutés dans `retrieval_cases.py`).
+- `retrieval_cases.py` : 10 questions et titres pertinents ;
+- `retrieval_metrics.py` : Precision@k, Recall@k, reciprocal rank et NDCG@k ;
+- `retrieval_benchmark.py` : exécution des vrais services/agents.
 
-### Lancer le benchmark
+Le benchmark mesure trois étages :
+
+| Étage | Exécution |
+|---|---|
+| `full_text` | `SearchService.search()` |
+| `hybrid` | + `HybridRetrieverAgent` et Atlas Vector Search |
+| `reranked` | + `RerankerAgent` lexical/sémantique |
+
+### Prérequis
+
+1. `MONGODB_URI` valide ;
+2. index Atlas Search et Vector Search créés ;
+3. `HUGGINGFACE_API_KEY` valide pour la branche dense/sémantique ;
+4. catalogue `backend/data/ai_tooling_catalog.csv` déjà ingéré via
+   `/api/v1/ingest/sample-data` ;
+5. idéalement, collection vidée avant ingestion afin d'éviter les doublons.
+
+La cible `/ingest/sample-data` exige un JWT. Le bouton `INGESTION DATA` du
+frontend appelle plutôt `/ingest/batch`, qui ingère tout le dossier `data`.
+
+### Commandes
+
+Depuis la racine :
+
+```bash
+make eval-retrieval
+```
+
+Ou :
 
 ```bash
 cd backend
-.venv/bin/python -m app.evaluation.retrieval_benchmark            # résumé agrégé par étage
-.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose  # + détail par cas (quel titre à quel rang)
-.venv/bin/python -m app.evaluation.retrieval_benchmark --k 3      # profondeur d'évaluation différente
+.venv/bin/python -m app.evaluation.retrieval_benchmark
+.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose
+.venv/bin/python -m app.evaluation.retrieval_benchmark --k 3
 ```
 
-### Comment lire les résultats
+Le `k` par défaut vaut `MAX_RAG_DOCUMENTS`.
 
-- **Recall@k** et **MRR** sont les métriques les plus parlantes ici : est-ce que le bon document est *quelque part* dans le top-k (recall), et à *quel rang* en moyenne (MRR, 1.0 = toujours en premier) ?
-- **Precision@k** est mécaniquement basse sur un petit corpus avec peu de documents pertinents par question (diviseur fixé à `k`, convention IR standard) — normal, pas un signe de mauvaise qualité en soi.
-- Comparer les 3 lignes du tableau répond à une question concrète : est-ce que chaque étage **améliore** vraiment le classement ? Sur le corpus d'exemple (10 documents, peu ambigu), les 3 étages atteignent déjà Recall@5=1.00 / MRR=1.00 — le corpus est trop petit/simple pour différencier full-text, hybride et reranking. La valeur du benchmark se révèle sur un corpus plus grand et plus ambigu (le tien) : c'est là que l'hybride et le reranking sémantique doivent démontrer un vrai gain sur le full-text seul.
-- C'est aussi l'outil à utiliser pour calibrer `SEMANTIC_WEIGHT` (`reranker_agent.py`) sur des données réelles plutôt qu'à l'aveugle — voir [RAG_SYSTEM.md](RAG_SYSTEM.md), erreur #6.
+## 5. Interprétation des métriques
 
-### Étendre à tes propres documents
+- **Precision@k** : proportion de documents pertinents dans les `k` places. Le
+  dénominateur reste `k`, même si moins de résultats sont retournés.
+- **Recall@k** : proportion de tous les documents pertinents retrouvés dans le
+  top-k.
+- **MRR** : moyenne de l'inverse du rang du premier document pertinent. `1.0`
+  signifie qu'un document pertinent est toujours premier.
+- **NDCG@k** : récompense les documents pertinents placés tôt et normalise par le
+  classement idéal.
 
-Ingère tes documents, puis ajoute des `RetrievalGoldCase(name=..., query=..., relevant_titles=frozenset({...}))` dans `retrieval_cases.py` avec les titres réellement pertinents pour chaque question — le reste du script fonctionne sans modification.
+Le benchmark déduplique les titres avant le calcul, car `SearchService` peut
+retourner plusieurs copies après réingestion. Cette déduplication par titre peut
+elle-même masquer deux documents distincts ayant le même titre.
 
-## Tests unitaires (isolés, avec fakes)
+Sur le petit catalogue fourni, les questions sont proches des textes et les
+scores peuvent saturer. Une égalité entre full-text, hybride et reranking ne
+démontre pas que les étapes supplémentaires sont inutiles ; elle signifie que le
+jeu est trop simple pour les distinguer.
 
-Les tests de `backend/tests/test_langgraph_workflow.py` utilisent des fakes (`FakeSearchService`, `FakeLLMService`, ...) pour éviter les vrais appels LLM, Redis ou MongoDB Atlas. Ils couvrent la compilation du graphe, les routes principales (greeting, RAG, safety redaction) et les champs debug.
+## 6. Étendre le jeu de vérité terrain
 
-Commande :
+Pour un corpus métier :
 
-```bash
-cd backend
-python3 -m unittest discover -s tests
+1. stabiliser des identifiants documentaires, plutôt que le titre seul ;
+2. créer des requêtes naturelles, ambiguës, multilingues et avec synonymes ;
+3. annoter tous les documents pertinents, pas seulement un résultat attendu ;
+4. ajouter des cas sans résultat pertinent ;
+5. séparer un jeu de calibration et un jeu de validation ;
+6. mesurer par type de document, langue et longueur ;
+7. comparer les distributions avant/après chaque changement de score.
+
+Les cas actuels utilisent `relevant_titles`; modifier ce contrat serait utile
+avant un corpus où les titres ne sont pas uniques.
+
+## 7. Évaluation de génération à ajouter
+
+Le benchmark retrieval ne dit pas si la réponse finale est correcte. Une suite
+complète devrait mesurer :
+
+- exactitude par rapport à une réponse de référence ;
+- couverture des éléments attendus ;
+- groundedness de chaque affirmation ;
+- validité et précision des citations `[n]` ;
+- taux de refus correct lorsque le corpus ne répond pas ;
+- langue et respect du format demandé ;
+- fuite de secrets et résistance aux instructions dans les documents ;
+- latence p50/p95, appels HF, tokens et coût ;
+- taux de fallback planner/critic/RAG ;
+- stabilité du résultat sur plusieurs exécutions.
+
+## 8. Tests frontend et intégration à ajouter
+
+Priorités recommandées :
+
+1. test du démarrage avec backend inaccessible et message utilisateur clair ;
+2. register → login automatique → restauration via `/auth/me` ;
+3. expiration JWT et logout ;
+4. upload PDF/CSV, rejet d'extension et reset confirmé/annulé ;
+5. envoi `Cmd/Ctrl+Enter`, état loading et rendu des citations ;
+6. cockpit alimenté par un `ChatResponse` complet ;
+7. statuts health distinguant configuration et disponibilité LLM ;
+8. test API de cache miss/hit et invalidation après ingestion/reset.
+
+## 9. Critère minimal avant fusion d'un changement RAG
+
+```text
+1. make test passe
+2. npm run build passe
+3. benchmark retrieval exécuté sur un corpus propre
+4. métriques avant/après conservées dans la PR
+5. aucun recul inexpliqué de Recall@k, MRR ou NDCG@k
+6. cas de fallback et absence de documents vérifiés
+7. documentation RAG et configuration mises à jour
 ```
-
-Dans un environnement sans dépendances backend installées (`langgraph`, `loguru`), le fichier de test se marque `skipped` proprement (`unittest.SkipTest`) plutôt que d'échouer.

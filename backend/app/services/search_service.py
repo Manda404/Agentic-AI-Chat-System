@@ -122,6 +122,28 @@ class SearchService:
             )
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
+    async def list_indexed_documents(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Retourne un inventaire borné des métadonnées documentaires indexées."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available.")
+        safe_limit = max(1, min(limit, 1000))
+
+        def fetch_documents() -> List[Dict[str, Any]]:
+            cursor = self._collection.find(
+                {},
+                {
+                    "_id": 0,
+                    "title": 1,
+                    "file_name": 1,
+                    "page_number": 1,
+                    "source": 1,
+                    "category": 1,
+                },
+            ).limit(safe_limit)
+            return list(cursor)
+
+        return await asyncio.to_thread(fetch_documents)
+
     async def clear_documents(self) -> int:
         """Supprime tous les documents de la collection sans supprimer ses index Atlas."""
         if self._collection is None:

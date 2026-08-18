@@ -11,6 +11,8 @@ amont, son résultat n'était de toute façon jamais utilisé que comme indice
 textuel, écrasé ensuite par `ToolRouterAgent`.
 """
 
+import re
+
 from app.logger import logger
 from app.models.chat_models import AgentResult, PlannerDecision
 from app.services.llm_service import LLMService
@@ -97,6 +99,12 @@ class LLMPlannerAgent:
     ]
     PLANNING_KEYWORDS = ["plan", "steps", "roadmap", "strategy", "multi-step", "étapes", "strategie"]
     CORRECTION_KEYWORDS = ["correct", "validate", "review", "critic", "fix", "corrige", "valide"]
+    DOCUMENT_LIST_PHRASES = [
+        "list documents", "list indexed", "what documents", "which documents",
+        "liste les documents", "liste des documents", "quels documents", "documents indexés",
+        "documents indexes", "fichiers indexés", "fichiers indexes",
+    ]
+    CALCULATION_KEYWORDS = ["calculate", "compute", "calcule", "calculer", "combien font"]
 
     def _fallback_decision(self, state: GraphState) -> PlannerDecision:
         """
@@ -120,6 +128,32 @@ class LLMPlannerAgent:
                 steps=["load_memory", "greeting", "critic_review", "safety_review", "final_answer"],
                 tools=["memory", "critic", "safety"],
                 reason="Greeting detected by fallback keyword match.",
+            )
+        if any(phrase in lowered for phrase in self.DOCUMENT_LIST_PHRASES):
+            return PlannerDecision(
+                intent="document_list",
+                requires_retrieval=False,
+                requires_rag=False,
+                requires_critic=True,
+                requires_safety=True,
+                steps=["load_memory", "list_documents", "critic_review", "safety_review", "final_answer"],
+                tools=["memory", "document_list", "critic", "safety"],
+                reason="Indexed document inventory requested.",
+            )
+        has_arithmetic = bool(re.search(r"\d\s*[-+*/%^]\s*\d", lowered))
+        has_numbered_calculation_request = bool(re.search(r"\d", lowered)) and any(
+            keyword in lowered for keyword in self.CALCULATION_KEYWORDS
+        )
+        if has_arithmetic or has_numbered_calculation_request:
+            return PlannerDecision(
+                intent="calculation",
+                requires_retrieval=False,
+                requires_rag=False,
+                requires_critic=True,
+                requires_safety=True,
+                steps=["load_memory", "calculate", "critic_review", "safety_review", "final_answer"],
+                tools=["memory", "calculator", "critic", "safety"],
+                reason="A deterministic calculator can answer this arithmetic request.",
             )
         is_document_request = any(word in lowered for word in self.DOCUMENT_KEYWORDS)
         if any(word in lowered for word in self.SUMMARY_KEYWORDS) and not is_document_request:
