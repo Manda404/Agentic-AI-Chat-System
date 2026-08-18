@@ -115,6 +115,16 @@ const quickPrompts = [
   "What are the key points in my documents?",
 ];
 
+const WELCOME_MESSAGE = `Hello! I’m your Agentic RAG assistant.
+
+I can:
+- search your indexed documents;
+- answer questions using retrieved sources;
+- summarize and explain content;
+- coordinate specialized agents to plan, review, and improve responses.
+
+Upload a document or ask a question to get started.`;
+
 const MAX_ACTIVITY_LOGS = 100;
 
 export default function Home() {
@@ -123,8 +133,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content:
-        "Ready. Test RAG, search and multi-agent flows.",
+      content: WELCOME_MESSAGE,
     },
   ]);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
@@ -437,7 +446,7 @@ export default function Home() {
     setMessages([
       {
         role: "assistant",
-        content: "Session cleared. Login again to reopen the chat workspace.",
+        content: WELCOME_MESSAGE,
       },
     ]);
     appendLog("WARN", "User logged out and local session storage was cleared.");
