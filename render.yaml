@@ -1,0 +1,64 @@
+services:
+  - type: web
+    name: agentic-rag-backend
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LLM_PROVIDER
+        value: huggingface
+      - key: API_PREFIX
+        value: /api/v1
+      - key: BACKEND_CORS_ORIGINS
+        sync: false
+      - key: HUGGINGFACE_API_KEY
+        sync: false
+      - key: MODEL_SUMMARIZATION
+        value: deepseek-ai/DeepSeek-V4-Pro
+      - key: MODEL_CODE_GENERATION
+        value: Qwen/Qwen2.5-Coder-7B-Instruct
+      - key: MODEL_QUESTION_ANSWERING
+        value: Qwen/Qwen2.5-7B-Instruct
+      - key: MODEL_REASONING
+        value: deepseek-ai/DeepSeek-V4-Pro
+      - key: MODEL_EMBEDDING
+        value: BAAI/bge-small-en-v1.5
+      - key: SEMANTIC_RERANKER_ENABLED
+        value: "true"
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: agentic_rag
+      - key: MONGODB_COLLECTION
+        value: documents
+      - key: MONGODB_SEARCH_INDEX
+        value: documents_search
+      - key: MONGODB_VECTOR_INDEX
+        value: documents_vector
+      - key: EMBEDDING_DIMENSIONS
+        value: "384"
+      - key: REDIS_URL
+        sync: false
+      - key: REDIS_TTL_SECONDS
+        value: "3600"
+      - key: AUTH_SECRET_KEY
+        sync: false
+      - key: AUTH_ALGORITHM
+        value: HS256
+      - key: AUTH_TOKEN_EXPIRY_MINUTES
+        value: "120"
+      - key: LANGFUSE_ENABLED
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_TO_CONSOLE
+        value: "true"
+      - key: LOG_TO_FILE
+        value: "false"
+      - key: LOG_FORMAT_JSON
+        value: "true"

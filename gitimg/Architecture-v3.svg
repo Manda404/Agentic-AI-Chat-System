@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Agentic RAG Platform architecture overview</title>
+  <desc id="desc">Current architecture diagram for a FastAPI, LangGraph, MongoDB Atlas, Redis, HuggingFace and Next.js agentic RAG platform.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="0.54" stop-color="#f6f7fb"/>
+      <stop offset="1" stop-color="#fff8ef"/>
+    </linearGradient>
+    <linearGradient id="rag" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0f8b8d"/>
+      <stop offset="1" stop-color="#2a6fdb"/>
+    </linearGradient>
+    <filter id="shadow" x="-12%" y="-12%" width="124%" height="124%">
+      <feDropShadow dx="0" dy="12" stdDeviation="12" flood-color="#10213f" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#20314f"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+      <path d="M2 2 L10 6 L2 10 Z" fill="#2167c5"/>
+    </marker>
+    <style>
+      .title{font:800 52px Inter,Arial,sans-serif;fill:#10213f;letter-spacing:0}
+      .heroTitle{font:800 52px Inter,Arial,sans-serif;fill:#ffffff;letter-spacing:0}
+      .subtitle{font:500 22px Inter,Arial,sans-serif;fill:#536275}
+      .heroSub{font:500 22px Inter,Arial,sans-serif;fill:#cbd6e6}
+      .section{font:800 20px Inter,Arial,sans-serif;fill:#14213d;letter-spacing:0}
+      .small{font:500 15px Inter,Arial,sans-serif;fill:#42526b}
+      .tiny{font:500 13px Inter,Arial,sans-serif;fill:#5b677a}
+      .label{font:700 15px Inter,Arial,sans-serif;fill:#14213d}
+      .whiteLabel{font:800 18px Inter,Arial,sans-serif;fill:#fff}
+      .mono{font:700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#25324a}
+      .panel{fill:#ffffff;stroke:#d9e1ee;stroke-width:2;rx:18;filter:url(#shadow)}
+      .subpanel{fill:#f8fbff;stroke:#dbe5f3;stroke-width:1.5;rx:14}
+      .node{fill:#ffffff;stroke:#ccd8ea;stroke-width:1.5;rx:12}
+      .nodeBlue{fill:#eef6ff;stroke:#72a5e8;stroke-width:1.8;rx:12}
+      .nodeGreen{fill:#effaf4;stroke:#61b87f;stroke-width:1.8;rx:12}
+      .nodeAmber{fill:#fff7e8;stroke:#e5a33a;stroke-width:1.8;rx:12}
+      .nodeRed{fill:#fff1f0;stroke:#df6b64;stroke-width:1.8;rx:12}
+      .chip{fill:#edf2f8;stroke:#ccd8ea;stroke-width:1;rx:12}
+      .arrow{stroke:#20314f;stroke-width:2.6;fill:none;marker-end:url(#arrow);stroke-linecap:round;stroke-linejoin:round}
+      .arrowBlue{stroke:#2167c5;stroke-width:2.6;fill:none;marker-end:url(#arrowBlue);stroke-linecap:round;stroke-linejoin:round}
+      .dash{stroke:#7890ad;stroke-width:2;fill:none;stroke-dasharray:7 7;marker-end:url(#arrow);stroke-linecap:round}
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <path d="M0 0 H1600 V110 H0 Z" fill="#10213f"/>
+  <text class="heroTitle" x="54" y="68">Agentic RAG Platform</text>
+  <text class="heroSub" x="56" y="99">FastAPI + LangGraph + MongoDB Atlas + Redis + HuggingFace + Next.js</text>
+  <text class="small" x="1235" y="55" fill="#dbe7f7">System overview v3</text>
+  <text class="tiny" x="1235" y="82" fill="#aebcd1">Reflects current project structure</text>
+
+  <rect class="panel" x="36" y="142" width="300" height="360"/>
+  <text class="section" x="62" y="180">1. Frontend</text>
+  <rect class="subpanel" x="62" y="202" width="248" height="122"/>
+  <text class="label" x="86" y="236">Next.js / React / TypeScript</text>
+  <text class="small" x="86" y="266">Chat interface</text>
+  <text class="small" x="86" y="292">Document ingestion UI</text>
+  <text class="small" x="86" y="318">Service health display</text>
+  <rect class="subpanel" x="62" y="348" width="248" height="116"/>
+  <text class="label" x="86" y="381">Debug cockpit</text>
+  <text class="small" x="86" y="411">route, agents, raw outputs</text>
+  <text class="small" x="86" y="437">plan, critic, safety, trace</text>
+
+  <rect class="panel" x="386" y="142" width="272" height="360"/>
+  <text class="section" x="412" y="180">2. API Boundary</text>
+  <rect class="nodeBlue" x="416" y="212" width="212" height="74"/>
+  <text class="label" x="448" y="244">FastAPI backend</text>
+  <text class="tiny" x="448" y="267">/api/v1/chat, ingest, auth</text>
+  <rect class="nodeGreen" x="416" y="318" width="212" height="74"/>
+  <text class="label" x="448" y="350">Service container</text>
+  <text class="tiny" x="448" y="373">LLM, search, embeddings</text>
+  <rect class="nodeAmber" x="416" y="424" width="212" height="48"/>
+  <text class="label" x="448" y="454">JWT + middleware</text>
+
+  <path class="arrow" d="M336 280 H386"/>
+  <text class="mono" x="344" y="260">HTTP / JSON</text>
+  <path class="arrow" d="M658 322 H704"/>
+
+  <rect class="panel" x="704" y="142" width="858" height="360"/>
+  <text class="section" x="730" y="180">3. LangGraph Multi-Agent Workflow</text>
+  <rect class="nodeBlue" x="740" y="218" width="142" height="60"/>
+  <text class="label" x="765" y="251">Memory</text>
+  <rect class="nodeBlue" x="916" y="218" width="150" height="60"/>
+  <text class="label" x="941" y="242">LLM Planner</text>
+  <text class="tiny" x="942" y="263">JSON + fallback</text>
+  <rect class="nodeBlue" x="1100" y="218" width="150" height="60"/>
+  <text class="label" x="1125" y="242">Tool Router</text>
+  <text class="tiny" x="1128" y="263">allowlisted routes</text>
+  <path class="arrowBlue" d="M882 248 H916"/>
+  <path class="arrowBlue" d="M1066 248 H1100"/>
+
+  <rect class="nodeGreen" x="740" y="326" width="144" height="58"/>
+  <text class="label" x="764" y="359">Greeting</text>
+  <rect class="nodeGreen" x="916" y="326" width="150" height="58"/>
+  <text class="label" x="939" y="359">Summary</text>
+  <rect class="nodeAmber" x="1100" y="326" width="150" height="58"/>
+  <text class="label" x="1119" y="350">Tool Exec</text>
+  <text class="tiny" x="1123" y="371">calc / documents</text>
+  <rect class="nodeRed" x="1286" y="326" width="150" height="58"/>
+  <text class="label" x="1324" y="350">RAG</text>
+  <text class="tiny" x="1309" y="371">document QA</text>
+
+  <path class="arrow" d="M1175 278 C1175 306 812 294 812 326"/>
+  <path class="arrow" d="M1175 278 C1175 306 991 294 991 326"/>
+  <path class="arrow" d="M1175 278 C1175 306 1175 294 1175 326"/>
+  <path class="arrow" d="M1175 278 C1175 306 1361 294 1361 326"/>
+
+  <rect class="node" x="810" y="424" width="146" height="48"/>
+  <text class="label" x="836" y="454">LLM Critic</text>
+  <rect class="node" x="1000" y="424" width="152" height="48"/>
+  <text class="label" x="1026" y="454">Safety Guard</text>
+  <rect class="node" x="1198" y="424" width="166" height="48"/>
+  <text class="label" x="1224" y="454">Final Answer</text>
+  <path class="arrow" d="M812 384 C812 412 883 396 883 424"/>
+  <path class="arrow" d="M991 384 C991 412 883 396 883 424"/>
+  <path class="arrow" d="M1175 384 C1175 412 883 396 883 424"/>
+  <path class="arrow" d="M1436 355 C1500 355 1502 448 1364 448"/>
+  <path class="arrow" d="M956 448 H1000"/>
+  <path class="arrow" d="M1152 448 H1198"/>
+  <text class="tiny" x="1372" y="438">retry RAG once</text>
+
+  <rect class="panel" x="36" y="540" width="512" height="398"/>
+  <text class="section" x="62" y="578">4. Ingestion and Knowledge Base</text>
+  <rect class="nodeAmber" x="72" y="620" width="116" height="58"/>
+  <text class="label" x="103" y="644">PDF</text>
+  <text class="tiny" x="94" y="665">PyPDF2</text>
+  <rect class="nodeAmber" x="72" y="712" width="116" height="58"/>
+  <text class="label" x="103" y="736">CSV</text>
+  <text class="tiny" x="88" y="757">row parser</text>
+  <rect class="nodeBlue" x="234" y="666" width="150" height="58"/>
+  <text class="label" x="260" y="690">Embeddings</text>
+  <text class="tiny" x="259" y="711">HF feature extraction</text>
+  <rect class="nodeGreen" x="430" y="666" width="88" height="58"/>
+  <text class="label" x="454" y="690">Atlas</text>
+  <text class="tiny" x="445" y="711">collection</text>
+  <path class="arrow" d="M188 649 C214 649 210 682 234 695"/>
+  <path class="arrow" d="M188 741 C214 741 210 708 234 695"/>
+  <path class="arrow" d="M384 695 H430"/>
+  <rect class="subpanel" x="72" y="808" width="446" height="86"/>
+  <text class="label" x="96" y="839">Stored document fields</text>
+  <text class="small" x="96" y="867">title, snippet, category, source, page, file, embedding</text>
+
+  <rect class="panel" x="590" y="540" width="602" height="398"/>
+  <text class="section" x="616" y="578">5. Hybrid RAG Pipeline</text>
+  <rect x="626" y="614" width="530" height="54" rx="16" fill="url(#rag)"/>
+  <text class="whiteLabel" x="766" y="648">Question grounded in indexed documents</text>
+  <rect class="nodeBlue" x="626" y="704" width="122" height="64"/>
+  <text class="label" x="650" y="728">Search</text>
+  <text class="tiny" x="648" y="750">Atlas full text</text>
+  <rect class="nodeBlue" x="786" y="704" width="122" height="64"/>
+  <text class="label" x="811" y="728">Vector</text>
+  <text class="tiny" x="812" y="750">Atlas search</text>
+  <rect class="nodeGreen" x="946" y="704" width="122" height="64"/>
+  <text class="label" x="965" y="728">Fusion</text>
+  <text class="tiny" x="963" y="750">dedup + rank</text>
+  <rect class="nodeAmber" x="706" y="814" width="122" height="64"/>
+  <text class="label" x="726" y="838">Rerank</text>
+  <text class="tiny" x="726" y="860">lexical + cosine</text>
+  <rect class="nodeAmber" x="866" y="814" width="122" height="64"/>
+  <text class="label" x="889" y="838">Compress</text>
+  <text class="tiny" x="888" y="860">local budget</text>
+  <rect class="nodeRed" x="1026" y="814" width="122" height="64"/>
+  <text class="label" x="1055" y="838">RAG</text>
+  <text class="tiny" x="1044" y="860">citations [n]</text>
+  <path class="arrowBlue" d="M687 668 V704"/>
+  <path class="arrowBlue" d="M847 668 V704"/>
+  <path class="arrow" d="M748 736 H786"/>
+  <path class="arrow" d="M908 736 H946"/>
+  <path class="arrow" d="M1007 768 C1007 796 767 786 767 814"/>
+  <path class="arrow" d="M828 846 H866"/>
+  <path class="arrow" d="M988 846 H1026"/>
+  <text class="tiny" x="628" y="908">Outputs: retrieved_count, reranked_count, top_score, sources_used, semantic_reranking_used</text>
+
+  <rect class="panel" x="1234" y="540" width="328" height="398"/>
+  <text class="section" x="1260" y="578">6. Cloud Services</text>
+  <rect class="node" x="1264" y="618" width="254" height="62"/>
+  <text class="label" x="1292" y="643">MongoDB Atlas</text>
+  <text class="tiny" x="1292" y="664">Full-text + Vector Search</text>
+  <rect class="node" x="1264" y="704" width="254" height="62"/>
+  <text class="label" x="1292" y="729">Redis Cloud</text>
+  <text class="tiny" x="1292" y="750">conversation memory + cache</text>
+  <rect class="node" x="1264" y="790" width="254" height="62"/>
+  <text class="label" x="1292" y="815">HuggingFace Router</text>
+  <text class="tiny" x="1292" y="836">LLM planning, generation, embeddings</text>
+  <rect class="node" x="1264" y="876" width="254" height="42"/>
+  <text class="label" x="1292" y="903">Langfuse optional traces</text>
+
+  <rect x="36" y="954" width="1526" height="1.5" fill="#d8e2ee"/>
+  <text class="tiny" x="54" y="982">Core path: user request -> planner/router -> direct/tool/RAG branch -> critic -> safety -> final answer. RAG path uses Atlas Search + Vector Search, reranking, local compression and structural citation validation.</text>
+</svg>
