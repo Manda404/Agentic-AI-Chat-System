@@ -116,22 +116,21 @@ const EMAIL_STORAGE_KEY = "agentic-rag-platform-email";
 const THEME_STORAGE_KEY = "agentic-rag-platform-theme";
 
 const quickPrompts = [
-  "How does LangGraph work?",
-  "Explain Redis caching",
-  "What is Langfuse observability?",
-  "Summarize the indexed documents",
+  "Introduce this RAG project",
+  "List the indexed documents",
+  "Summarize my documents with sources",
   "What are the key points in my documents?",
+  "Answer using only available sources",
 ];
 
-const WELCOME_MESSAGE = `Hello! I’m your Agentic RAG assistant.
+const WELCOME_MESSAGE = `Hello, I am the Agentic RAG Platform assistant.
 
-I can:
-- search your indexed documents;
-- answer questions using retrieved sources;
-- summarize and explain content;
-- coordinate specialized agents to plan, review, and improve responses.
+Project goal:
+- turn internal documents into reliable, source-backed answers;
+- combine document search, hybrid retrieval, and review agents;
+- make the reasoning path observable through sources, agent traces, and retrieval metrics.
 
-Upload a document or ask a question to get started.`;
+Built by Manda Surel to demonstrate a cloud-deployable multi-agent RAG architecture.`;
 
 const MAX_ACTIVITY_LOGS = 100;
 
@@ -905,16 +904,6 @@ export default function Home() {
     ...(isMobile ? styles.quickInfoGridMobile : {}),
   };
 
-  const bottomHintsStyle: CSSProperties = {
-    ...styles.bottomHints,
-    ...(isMobile ? styles.bottomHintsMobile : {}),
-  };
-
-  const hintChipStyle: CSSProperties = {
-    ...styles.hintChip,
-    ...(isMobile ? styles.hintChipMobile : {}),
-  };
-
   const appShellStyle: CSSProperties = {
     ...styles.appShell,
     ...(isTablet ? styles.appShellTablet : {}),
@@ -1048,10 +1037,10 @@ export default function Home() {
 
             <div style={authGridStyle}>
               <div style={styles.authIntro}>
-                <div style={styles.sectionKicker}>multi agent starter</div>
-                <h1 style={authTitleStyle}>workspace</h1>
+                <div style={styles.sectionKicker}>agentic rag platform</div>
+                <h1 style={authTitleStyle}>documentary RAG</h1>
                 <p style={styles.authText}>
-                  Test agents, routing, cache & retrieval
+                  A document assistant built by Manda Surel to turn internal knowledge into reliable, sourced, and usable answers.
                 </p>
 
                 <div style={styles.cornerCard}>
@@ -1067,6 +1056,25 @@ export default function Home() {
                     label="last check"
                     value={lastHealthCheck || "--:--:--"}
                   />
+                </div>
+
+                <div style={styles.projectBrief}>
+                  <div style={styles.projectBriefHeader}>
+                    <span style={styles.projectBriefEyebrow}>Created by</span>
+                    <strong style={styles.projectBriefAuthor}>Manda Surel</strong>
+                  </div>
+                  <p style={styles.projectBriefText}>
+                    A multi-agent RAG platform for querying internal documents,
+                    retrieving relevant passages, and generating reviewed answers
+                    with citations, traces, and retrieval context.
+                  </p>
+                  <div style={styles.projectBriefMeta}>
+                    <span>FastAPI</span>
+                    <span>Next.js</span>
+                    <span>MongoDB Atlas</span>
+                    <span>Redis Cloud</span>
+                    <span>Render + Vercel</span>
+                  </div>
                 </div>
               </div>
 
@@ -1150,13 +1158,6 @@ export default function Home() {
               </form>
             </div>
 
-            <div style={bottomHintsStyle}>
-              {quickPrompts.map((prompt) => (
-                <div key={prompt} style={hintChipStyle}>
-                  {prompt}
-                </div>
-              ))}
-            </div>
           </div>
         </section>
       ) : (
@@ -1955,20 +1956,23 @@ const styles: Record<string, CSSProperties> = {
   },
   authFrame: {
     width: "100%",
-    maxWidth: 1180,
+    maxWidth: 1360,
+    minHeight: 680,
     border: "1px solid var(--border-muted-strong)",
     background: "var(--surface-panel)",
     borderRadius: 22,
-    padding: 22,
+    padding: 30,
     boxShadow: "0 0 0 1px var(--ring-faint), 0 24px 80px var(--shadow-ambient)",
     display: "grid",
     gap: 20,
   },
   authFrameTablet: {
     maxWidth: 900,
+    minHeight: "auto",
   },
   authFrameMobile: {
     padding: 14,
+    minHeight: "auto",
     borderRadius: 16,
   },
   authTopBar: {
@@ -2001,16 +2005,16 @@ const styles: Record<string, CSSProperties> = {
   },
   authGrid: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 0.85fr",
-    gap: 22,
-    alignItems: "start",
+    gridTemplateColumns: "minmax(0, 1.05fr) minmax(360px, 0.75fr)",
+    gap: 52,
+    alignItems: "center",
   },
   authGridStacked: {
     gridTemplateColumns: "1fr",
   },
   authIntro: {
     display: "grid",
-    gap: 14,
+    gap: 16,
     alignContent: "start",
     padding: "8px 6px",
   },
@@ -2073,6 +2077,42 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--text-primary)",
     fontSize: 12,
     wordBreak: "break-word",
+  },
+  projectBrief: {
+    borderLeft: "2px solid var(--accent)",
+    padding: "4px 0 4px 16px",
+    maxWidth: 640,
+    display: "grid",
+    gap: 10,
+  },
+  projectBriefHeader: {
+    display: "grid",
+    gap: 3,
+  },
+  projectBriefEyebrow: {
+    color: "var(--text-label)",
+    fontSize: 10,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+  },
+  projectBriefAuthor: {
+    color: "var(--text-primary)",
+    fontSize: 18,
+    lineHeight: 1.2,
+  },
+  projectBriefText: {
+    margin: 0,
+    color: "var(--text-tertiary)",
+    fontSize: 13,
+    lineHeight: 1.8,
+  },
+  projectBriefMeta: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8,
+    color: "var(--text-label)",
+    fontSize: 10,
+    letterSpacing: "0.04em",
   },
   authPanel: {
     borderRadius: 18,
@@ -2216,28 +2256,6 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--text-tertiary)",
     lineHeight: 1.7,
     minHeight: 20,
-  },
-  bottomHints: {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  bottomHintsMobile: {
-    flexDirection: "column",
-  },
-  hintChip: {
-    padding: "9px 12px",
-    borderRadius: 999,
-    border: "1px solid var(--border-muted-soft)",
-    background: "var(--surface-card)",
-    color: "var(--text-label)",
-    fontSize: 11,
-    maxWidth: 340,
-  },
-  hintChipMobile: {
-    maxWidth: "100%",
-    width: "100%",
-    boxSizing: "border-box",
   },
   appShell: {
     minHeight: "100vh",
