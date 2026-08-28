@@ -4,7 +4,7 @@
 
 **Une plateforme d'assistant documentaire intelligent pour entreprises, capable de transformer des documents internes en réponses fiables, sourcées et traçables.**
 
-<img src="gitimg/Architecture-v0.png" alt="Chat Interface" width="600"/>
+<img src="gitimg/Architecture-v2.png" alt="Chat Interface" width="600"/>
 
 <img src="gitimg/Architecture-v4.png" alt="System Overview" width="600"/>
 
