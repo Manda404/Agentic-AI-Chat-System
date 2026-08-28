@@ -2,29 +2,75 @@
 
 # Agentic RAG Platform
 
-**Une plateforme RAG agentique, multi-agent et observable, construite avec FastAPI, LangGraph, Redis Cloud, MongoDB Atlas et Next.js.**
+**Une plateforme d'assistant documentaire intelligent pour entreprises, capable de transformer des documents internes en réponses fiables, sourcées et traçables.**
 
 <img src="gitimg/Architecture-v0.png" alt="Chat Interface" width="600"/>
 
-<img src="gitimg/Architecture-v2.png" alt="System Overview" width="600"/>
+<img src="gitimg/Architecture-v4.png" alt="System Overview" width="600"/>
 
 </div>
 
-## Problématique
+## Problème Business
 
-Les assistants IA classiques répondent souvent de manière trop générique : ils ne savent pas toujours quand chercher dans des documents, quand répondre directement, quand citer leurs sources, ni comment vérifier la qualité ou la sécurité de leur réponse.
+Les entreprises accumulent de plus en plus de documents internes : procédures, rapports, politiques RH, contrats, supports de formation, documentation produit, fichiers CSV, PDF réglementaires ou bases de connaissance métier.
 
-Ce projet cherche à résoudre cette problématique : **comment construire un assistant conversationnel capable de router une demande, exploiter une base documentaire, produire une réponse sourcée, vérifier sa qualité et rester inspectable par le développeur ?**
+Le problème est que cette connaissance reste souvent difficile à exploiter :
 
-## Problème Traité
+- les collaborateurs perdent du temps à chercher l'information fiable ;
+- les réponses varient selon la personne, le document consulté ou le niveau d'expertise ;
+- les assistants IA classiques peuvent produire des réponses non sourcées ou inventées ;
+- les équipes métiers ont besoin de preuves, de citations et de traçabilité ;
+- les équipes techniques ont besoin d'observer ce que fait l'IA pour diagnostiquer, corriger et améliorer le système.
 
-Le système répond à trois besoins concrets :
+Ce projet répond donc à une question business simple :
+
+**Comment permettre aux équipes d'une entreprise de poser des questions sur leurs documents internes et d'obtenir rapidement une réponse fiable, sourcée, contrôlée et traçable ?**
+
+L'objectif n'est pas seulement de construire un chatbot. L'objectif est de réduire le temps perdu à chercher l'information, d'améliorer la qualité des réponses internes et de rendre l'utilisation de l'IA plus fiable dans des contextes où les sources comptent.
+
+## Solution Proposée
+
+Agentic RAG Platform transforme une base documentaire interne en assistant conversationnel capable de :
 
 - **Répondre à des questions utilisateur** avec une interface web simple.
-- **Exploiter des documents internes** grâce à un pipeline RAG hybride basé sur MongoDB Atlas (full-text + recherche vectorielle).
-- **Rendre l’exécution transparente** grâce à un cockpit de debug qui affiche la route, les agents appelés, les résultats bruts, le plan, les métriques de retrieval, le critic et le safety guard.
+- **Exploiter des documents internes** grâce à un pipeline RAG hybride basé sur MongoDB Atlas : full-text search + recherche vectorielle.
+- **Router intelligemment les demandes** entre réponse directe, calcul, inventaire documentaire ou recherche RAG.
+- **Produire des réponses sourcées** à partir des passages retrouvés dans les documents.
+- **Contrôler la réponse** avec un critic, une validation des citations et un safety guard.
+- **Rendre l'exécution transparente** grâce à un cockpit de debug qui affiche la route, les agents appelés, les résultats bruts, le plan, les métriques de retrieval, le critic et les informations de safety.
 
-L’objectif n’est pas seulement de faire un chatbot, mais de montrer une architecture agentique structurée, progressive et proche d’un système production-grade.
+La valeur business principale est :
+
+**moins de recherche manuelle, moins de réponses inventées, plus de confiance et plus de traçabilité dans l'utilisation de l'IA sur des connaissances internes.**
+
+## Secteurs Visés
+
+La plateforme s'adresse surtout aux organisations où la connaissance documentaire est volumineuse, critique et doit être vérifiable.
+
+**Support client, SaaS et équipes IT**
+- Assistant interne pour les agents support.
+- Recherche rapide dans les FAQ, tickets, guides produit et procédures.
+- Réponses cohérentes avec sources pour réduire le temps de résolution.
+
+**Banque, assurance et services financiers**
+- Recherche dans les procédures, politiques internes et documents de conformité.
+- Aide aux conseillers, équipes risk, audit ou compliance.
+- Besoin fort de traçabilité, de contrôle et de réponses justifiables.
+
+**Juridique, conformité et audit**
+- Analyse documentaire, recherche de clauses, obligations ou règles internes.
+- Réponses sourcées pour préparer des revues, contrôles ou audits.
+- Réduction du risque lié aux réponses non vérifiées.
+
+**Industrie, énergie et maintenance**
+- Accès rapide aux manuels techniques, fiches sécurité et procédures terrain.
+- Assistance aux équipes opérationnelles qui doivent trouver la bonne procédure au bon moment.
+- Diminution du temps de recherche dans une documentation souvent dense.
+
+**Santé, pharmacie et qualité**
+- Recherche dans des protocoles, procédures qualité, notices ou documentation réglementaire.
+- Usage pertinent pour l'assistance documentaire interne, hors diagnostic médical automatisé.
+- Secteur sensible où les sources et le contrôle sont indispensables.
 
 ## Méthode De Résolution
 
