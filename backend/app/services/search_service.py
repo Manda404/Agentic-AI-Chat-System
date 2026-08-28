@@ -21,6 +21,8 @@ l'event loop pendant une requête Mongo.
 import asyncio
 from typing import Any, Dict, List
 
+import certifi
+
 from app.config.settings import settings
 from app.logger import logger
 from app.models.chat_models import SearchResult
@@ -41,7 +43,12 @@ class SearchService:
             pymongo_module = importlib.import_module("pymongo")
             mongo_client_class = getattr(pymongo_module, "MongoClient")
 
-            self._client = mongo_client_class(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+            self._client = mongo_client_class(
+                settings.mongodb_uri,
+                serverSelectionTimeoutMS=5000,
+                tls=True,
+                tlsCAFile=certifi.where(),
+            )
             self._client.admin.command("ping")
             self._collection = self._client[settings.mongodb_db_name][settings.mongodb_collection]
 
