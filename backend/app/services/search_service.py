@@ -11,6 +11,10 @@ champ `embedding` par l'appelant (voir `ingest_router.py`), afin que la même
 collection serve aussi de source à `MongoVectorStore` pour la recherche
 vectorielle (Atlas Vector Search).
 
+Les méthodes de lecture acceptent `owner_id` : en `DOCUMENT_SCOPE_MODE=owner`,
+les requêtes ne voient que les documents du propriétaire et les documents
+marqués `shared`.
+
 `pymongo` est un driver SYNCHRONE : `aggregate()`/`insert_many()` bloquent le
 thread appelant le temps de l'aller-retour réseau. Comme ce service est
 utilisé depuis des méthodes `async def` (agents LangGraph, routes FastAPI),
@@ -19,6 +23,7 @@ l'event loop pendant une requête Mongo.
 """
 
 import asyncio
+import hashlib
 from typing import Any, Dict, List
 
 import certifi
@@ -70,7 +75,7 @@ class SearchService:
         return self._collection
 
     async def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> int:
-        """Insère une liste de documents (déjà enrichis d'un champ `embedding` si besoin)."""
+        """Upsert une liste de documents déjà enrichis d'un `_id` stable si possible."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         logger.bind(collection=self.index_name, document_count=len(documents)).info(
@@ -78,13 +83,32 @@ class SearchService:
         )
         if not documents:
             return 0
-        await asyncio.to_thread(self._collection.insert_many, documents)
-        logger.bind(collection=self.index_name, document_count=len(documents)).info(
+        normalized_by_id = {
+            document["_id"]: document
+            for document in (self._with_stable_id(document) for document in documents)
+        }
+        normalized_documents = list(normalized_by_id.values())
+        try:
+            import importlib
+
+            pymongo_module = importlib.import_module("pymongo")
+            replace_one = getattr(pymongo_module, "ReplaceOne")
+            operations = [
+                replace_one({"_id": document["_id"]}, document, upsert=True)
+                for document in normalized_documents
+            ]
+            result = await asyncio.to_thread(self._collection.bulk_write, operations, ordered=False)
+            indexed_count = int(result.upserted_count + result.modified_count + result.matched_count)
+        except Exception:
+            logger.exception("Bulk upsert failed; falling back to insert_many.")
+            await asyncio.to_thread(self._collection.insert_many, normalized_documents)
+            indexed_count = len(normalized_documents)
+        logger.bind(collection=self.index_name, document_count=len(normalized_documents)).info(
             "Bulk index completed."
         )
-        return len(documents)
+        return indexed_count
 
-    async def search(self, query: str) -> List[SearchResult]:
+    async def search(self, query: str, owner_id: str | None = None) -> List[SearchResult]:
         """Recherche full-text (Atlas Search, compound text) sur title/snippet/category, top 5 résultats."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available. Please ingest data and check MONGODB_URI.")
@@ -92,7 +116,7 @@ class SearchService:
             "MongoDB Atlas Search query started."
         )
         try:
-            pipeline = [
+            pipeline: list[dict[str, Any]] = [
                 {
                     "$search": {
                         "index": settings.mongodb_search_index,
@@ -101,13 +125,21 @@ class SearchService:
                                 {"text": {"query": query, "path": "title", "score": {"boost": {"value": 2}}}},
                                 {"text": {"query": query, "path": "snippet"}},
                                 {"text": {"query": query, "path": "category"}},
-                            ]
+                            ],
+                            "minimumShouldMatch": 1,
                         },
                     }
                 },
-                {"$limit": 5},
-                {"$addFields": {"score": {"$meta": "searchScore"}}},
             ]
+            access_filter = self._search_access_filter(owner_id)
+            if access_filter:
+                pipeline.append({"$match": access_filter})
+            pipeline.extend(
+                [
+                    {"$limit": 5},
+                    {"$addFields": {"score": {"$meta": "searchScore"}}},
+                ]
+            )
             hits = await asyncio.to_thread(lambda: list(self._collection.aggregate(pipeline)))
             logger.bind(collection=self.index_name, hits_count=len(hits)).info(
                 "MongoDB Atlas Search query completed."
@@ -120,6 +152,8 @@ class SearchService:
                     source=hit.get("source", "mongodb"),
                     page_number=hit.get("page_number"),
                     file_name=hit.get("file_name"),
+                    document_id=str(hit.get("document_id") or hit.get("_id") or "") or None,
+                    embedding=hit.get("embedding"),
                 )
                 for hit in hits
             ]
@@ -129,15 +163,20 @@ class SearchService:
             )
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
-    async def list_indexed_documents(self, limit: int = 200) -> List[Dict[str, Any]]:
+    async def list_indexed_documents(
+        self,
+        limit: int = 200,
+        owner_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """Retourne un inventaire borné des métadonnées documentaires indexées."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         safe_limit = max(1, min(limit, 1000))
+        access_filter = self._search_access_filter(owner_id)
 
         def fetch_documents() -> List[Dict[str, Any]]:
             cursor = self._collection.find(
-                {},
+                access_filter,
                 {
                     "_id": 0,
                     "title": 1,
@@ -145,19 +184,27 @@ class SearchService:
                     "page_number": 1,
                     "source": 1,
                     "category": 1,
+                    "document_id": 1,
+                    "owner_id": 1,
+                    "visibility": 1,
                 },
             ).limit(safe_limit)
             return list(cursor)
 
         return await asyncio.to_thread(fetch_documents)
 
-    async def clear_documents(self) -> int:
+    async def clear_documents(self, owner_id: str | None = None) -> int:
         """Supprime tous les documents de la collection sans supprimer ses index Atlas."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
-        result = await asyncio.to_thread(self._collection.delete_many, {})
+        filter_query = self._owner_filter(owner_id)
+        result = await asyncio.to_thread(self._collection.delete_many, filter_query)
         deleted_count = int(result.deleted_count)
-        logger.bind(collection=self.index_name, deleted_count=deleted_count).warning(
+        logger.bind(
+            collection=self.index_name,
+            owner_scoped=bool(filter_query),
+            deleted_count=deleted_count,
+        ).warning(
             "MongoDB document collection reset completed."
         )
         return deleted_count
@@ -171,3 +218,39 @@ class SearchService:
         """Ferme le client MongoDB possédé par ce service."""
         if self._client is not None:
             self._client.close()
+
+    def _with_stable_id(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """Retourne une copie du document avec `_id` et `document_id` déterministes."""
+        normalized = dict(document)
+        document_id = str(normalized.get("document_id") or normalized.get("_id") or "").strip()
+        if not document_id:
+            identity_owner = (
+                str(normalized.get("owner_id", "") or "").strip().lower()
+                if normalized.get("visibility") == "private"
+                else ""
+            )
+            identity = "|".join(
+                [identity_owner]
+                + [
+                    str(normalized.get(key, "") or "").strip()
+                    for key in ("source", "file_name", "page_number", "title", "snippet")
+                ]
+            )
+            document_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        normalized["document_id"] = document_id
+        normalized["_id"] = document_id
+        return normalized
+
+    def _search_access_filter(self, owner_id: str | None) -> Dict[str, Any]:
+        """Filtre de visibilité appliqué aux recherches et inventaires."""
+        if settings.document_scope_mode != "owner":
+            return {}
+        if owner_id:
+            return {"$or": [{"owner_id": owner_id}, {"visibility": "shared"}]}
+        return {"visibility": "shared"}
+
+    def _owner_filter(self, owner_id: str | None) -> Dict[str, Any]:
+        """Filtre de suppression : en mode owner, un non-admin ne supprime que ses documents."""
+        if settings.document_scope_mode == "owner" and owner_id:
+            return {"owner_id": owner_id}
+        return {}

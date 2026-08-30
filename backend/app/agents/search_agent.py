@@ -52,7 +52,8 @@ class SearchAgent:
         )
 
         # Recherche full-text de premier niveau ; les agents suivants amélioreront le contexte.
-        results = await self.search_service.search(state.user_message)
+        owner_id = state.metadata.get("user_id")
+        results = await self.search_service.search(state.user_message, owner_id=owner_id)
 
         state.search_results = results
         lines = []
@@ -82,8 +83,10 @@ class SearchAgent:
             metadata={
                 "results_count": len(results),
                 "index_name" : self.search_service.index_name,
+                "document_scope": settings.document_scope_mode,
                 "documents": [
                     {
+                        "document_id": item.document_id,
                         "title": item.title,
                         "file_name": item.file_name,
                         "page_number": item.page_number,

@@ -34,7 +34,7 @@ async def chat(
         conversation_id=request.conversation_id or "new",
         message_preview=request.message[:120],
     ).info("Chat API request received.")
-    return await workflow.run(request)
+    return await workflow.run(request, user_id=current_user.email)
 
 
 @router.get("/conversations/{conversation_id}/context", response_model=ConversationContextResponse)
@@ -47,7 +47,7 @@ async def get_conversation_context(
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context requested."
     )
-    messages = await memory_service.get_messages(conversation_id)
+    messages = await memory_service.get_messages(conversation_id, owner_id=current_user.email)
     return ConversationContextResponse(
         conversation_id=conversation_id,
         message_count=len(messages),
@@ -64,10 +64,9 @@ async def clear_conversation_context(
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context cleared."
     )
-    await memory_service.clear_messages(conversation_id)
+    await memory_service.clear_messages(conversation_id, owner_id=current_user.email)
     return ConversationContextResponse(
         conversation_id=conversation_id,
         message_count=0,
         messages=[],
     )
-

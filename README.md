@@ -103,11 +103,74 @@ La méthode est la suivante :
 
 ## Architecture En Bref
 
+```mermaid
+flowchart LR
+  U[Utilisateur] --> F[Next.js Frontend]
+  F --> API[FastAPI Backend]
+
+  API --> AUTH[Auth Router]
+  API --> ING[Ingest Router]
+  API --> CHAT[Chat Router]
+  API --> HLT[Health Router]
+
+  CHAT --> WF[LangGraph ChatWorkflow]
+
+  WF --> MEM[MemoryAgent]
+  MEM --> PL[LLMPlannerAgent]
+  PL --> TR[ToolRouterAgent]
+
+  TR -->|greeting| G[Greeting Node]
+  TR -->|direct / summary| SUM[SummaryAgent]
+  TR -->|calculation / document_list| TOOL[ToolExecutorAgent]
+  TR -->|document_qa / rag| SA[SearchAgent]
+
+  SA --> HY[HybridRetrieverAgent]
+  HY --> RR[RerankerAgent]
+  RR --> CC[ContextCompressionAgent]
+  CC --> RAG[RAGAgent]
+
+  RAG --> CV[CitationValidatorAgent structural + lexical]
+  CV --> CR[LLMCriticAgent]
+  G --> CR
+  SUM --> CR
+  TOOL --> CR
+
+  CR --> SG[SafetyGuardAgent]
+  SG --> FA[FinalAnswerAgent]
+  FA --> CHAT
+  CHAT --> API
+  API --> F
+
+  ING --> POL[Document Access Policy]
+  POL --> EMB[HuggingFace Embeddings]
+  POL --> MDB[(MongoDB Atlas Documents)]
+
+  SA --> MDB
+  HY --> VS[MongoVectorStore]
+  VS --> EMB
+  VS --> MDB
+
+  MEM --> RD[(Redis Memory / Cache / Users / Rate Limit)]
+  AUTH --> RD
+  CHAT --> RD
+
+  PL --> LLM[LLMService]
+  SUM --> LLM
+  RAG --> LLM
+  CR --> LLM
+  SG --> LLM
+  LLM --> HF[HuggingFace Router / Ollama Config]
+
+  WF -. optional traces .-> LF[(Langfuse)]
+  LLM -. optional traces .-> LF
+```
+
 **Backend**
 - FastAPI pour l’API HTTP.
 - LangGraph pour l’orchestration multi-agent.
-- Redis Cloud pour l’historique conversationnel et le cache.
+- Redis Cloud pour l’historique conversationnel, le cache, les comptes et le rate limiting partagé.
 - MongoDB Atlas (Atlas Search + Atlas Vector Search) pour la recherche documentaire hybride (full-text + sémantique).
+- Cloisonnement documentaire configurable (`shared` localement, `owner` conseillé hors dev) avec visibilité `shared/private`.
 - HuggingFace Router compatible OpenAI pour les appels LLM.
 - Loguru et Langfuse optionnel pour l’observabilité.
 
@@ -133,7 +196,7 @@ La méthode est la suivante :
 
 - Une architecture multi-agent claire et extensible.
 - Un workflow LangGraph réel, pas seulement une orchestration manuelle.
-- Un RAG progressif : recherche, reranking, compression, réponse sourcée.
+- Un RAG progressif : recherche hybride avec fusion RRF, reranking, compression extractive, réponse sourcée.
 - Une compatibilité API stable avec `/api/v1/chat`.
 - Des champs debug utiles : `plan`, `critic_score`, `retrieval_metrics`, `safety_feedback`, `trace_id`.
 - Une base pédagogique pour aller vers un système agentique plus robuste.
@@ -175,4 +238,4 @@ Pour aller plus loin :
 
 Ce projet est un **starter production-grade avancé** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
 
-Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant et l’évaluation continue restent des pistes d’évolution.
+Cette branche améliore plusieurs points critiques : ingestion idempotente avec IDs stables, fusion hybride RRF, réutilisation des embeddings au reranking, compression locale plus sélective, critic conditionnel mais imposé sur le RAG, contrôle d'accès documentaire configurable, limites d'ingestion, reset/batch administrables et rate limiting Redis avec fallback local. Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant, les rôles fins et l’évaluation continue restent des pistes d’évolution.

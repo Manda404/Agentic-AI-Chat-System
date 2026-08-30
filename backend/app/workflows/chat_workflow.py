@@ -6,6 +6,7 @@ il gère le cache Redis et l'historique, puis délègue l'orchestration à un
 `StateGraph` composé de nœuds agents explicites.
 """
 
+import hashlib
 import time
 import uuid
 from typing import Awaitable, Callable, Optional
@@ -29,7 +30,7 @@ from app.agents.tool_executor_agent import ToolExecutorAgent
 from app.config.settings import settings
 from app.logger import clear_log_context, logger, set_log_context, update_log_context
 from app.memory.redis_memory import RedisMemoryService
-from app.models.chat_models import AgentResult, ChatRequest, ChatResponse
+from app.models.chat_models import AgentResult, ChatRequest, ChatResponse, PlannerDecision
 from app.services.embedding_service import HuggingFaceEmbeddingService
 from app.services.llm_service import LLMService
 from app.services.mongo_vector_store import MongoVectorStore
@@ -104,14 +105,14 @@ class ChatWorkflow:
         self.graph = self._build_graph()
 
     @observe(name="chat_workflow")
-    async def run(self, request: ChatRequest) -> ChatResponse:
+    async def run(self, request: ChatRequest, user_id: Optional[str] = None) -> ChatResponse:
         """Traite un message : cache -> LangGraph -> mémoire/cache -> réponse API."""
         conversation_id = request.conversation_id or str(uuid.uuid4())
         set_log_context(thread_id=conversation_id, agent_type="workflow")
-        cache_key = f"chat:{conversation_id}:{request.message.strip().lower()}"
+        owner_scope = self._cache_owner_scope(user_id)
 
         try:
-            stored_context = await self.memory_service.get_messages(conversation_id)
+            stored_context = await self.memory_service.get_messages(conversation_id, owner_id=user_id)
             if len(request.message) > settings.max_user_message_chars:
                 answer = f"Message is too long. Maximum length is {settings.max_user_message_chars} characters."
                 return ChatResponse(
@@ -132,10 +133,13 @@ class ChatWorkflow:
                     safety_passed=False,
                     trace_id=conversation_id,
                 )
+            document_version = await self.cache_service.get_value("documents:version") or "0"
+            cache_key = f"chat:{owner_scope}:{conversation_id}:docs:{document_version}:{request.message.strip().lower()}"
             cached_answer = await self.cache_service.get_value(cache_key)
 
             logger.bind(
                 conversation_id=conversation_id,
+                user_id=user_id or "anonymous",
                 history_count=len(request.history),
                 message_preview=request.message[:120],
             ).info("Chat workflow started.")
@@ -158,18 +162,19 @@ class ChatWorkflow:
                     context_messages=len(stored_context),
                     critic_passed=True,
                     safety_passed=True,
-                    evaluation={"cache": {"hit": True}},
+                    evaluation={"cache": {"hit": True, "documents_version": document_version}},
                     trace_id=conversation_id,
                 )
 
-            await self.memory_service.append_message(conversation_id, "user", request.message)
+            await self.memory_service.append_message(conversation_id, "user", request.message, owner_id=user_id)
 
             initial_state = GraphState(
                 conversation_id=conversation_id,
                 user_message=request.message,
                 history=request.history,
                 transaction_id=conversation_id,
-                evaluation={"cache": {"hit": False}},
+                metadata={"user_id": user_id} if user_id else {},
+                evaluation={"cache": {"hit": False, "documents_version": document_version}},
             )
             graph_config = (
                 {"configurable": {"thread_id": conversation_id}}
@@ -180,7 +185,7 @@ class ChatWorkflow:
             state = GraphState.from_mapping(final_payload)
 
             answer = state.final_answer or "I could not produce an answer for this request."
-            await self.memory_service.append_message(conversation_id, "assistant", answer)
+            await self.memory_service.append_message(conversation_id, "assistant", answer, owner_id=user_id)
             await self.cache_service.set_value(cache_key, answer)
 
             logger.bind(
@@ -198,7 +203,7 @@ class ChatWorkflow:
                 agent_results=state.agent_results,
                 tool_results=state.tool_results,
                 cached=False,
-                context_messages=len(await self.memory_service.get_messages(conversation_id)),
+                context_messages=len(await self.memory_service.get_messages(conversation_id, owner_id=user_id)),
                 plan=state.plan,
                 critic_feedback=state.critic_feedback,
                 critic_passed=state.critic_passed,
@@ -228,7 +233,9 @@ class ChatWorkflow:
         graph.add_node("rag", self._agent_node("RAGAgent", self.rag_agent.run, swallow_errors=True))
         graph.add_node("citation_validator", self._agent_node("CitationValidatorAgent", self.citation_validator_agent.run))
         graph.add_node("critic", self._agent_node("CriticAgent", self.critic_agent.run))
+        graph.add_node("skip_critic", self._skip_critic_node)
         graph.add_node("safety", self._agent_node("SafetyGuardAgent", self.safety_guard_agent.run))
+        graph.add_node("skip_safety", self._skip_safety_node)
         graph.add_node("prepare_rag_retry", self._prepare_retry_node("rag"))
         graph.add_node("prepare_summary_retry", self._prepare_retry_node("summary"))
         graph.add_node("final_answer", self._agent_node("FinalAnswerAgent", self.final_answer_agent.run))
@@ -249,7 +256,14 @@ class ChatWorkflow:
                 "fallback": "summary",
             },
         )
-        graph.add_edge("tool_executor", "critic")
+        graph.add_conditional_edges(
+            "tool_executor",
+            self._route_to_critic,
+            {
+                "critic": "critic",
+                "skip_critic": "skip_critic",
+            },
+        )
         graph.add_edge("search", "hybrid_retriever")
         graph.add_edge("hybrid_retriever", "reranker")
         graph.add_edge("reranker", "context_compression")
@@ -261,15 +275,37 @@ class ChatWorkflow:
                 "critic": "critic",
             },
         )
-        graph.add_edge("greeting", "critic")
-        graph.add_edge("summary", "critic")
+        graph.add_conditional_edges(
+            "greeting",
+            self._route_to_critic,
+            {
+                "critic": "critic",
+                "skip_critic": "skip_critic",
+            },
+        )
+        graph.add_conditional_edges(
+            "summary",
+            self._route_to_critic,
+            {
+                "critic": "critic",
+                "skip_critic": "skip_critic",
+            },
+        )
         graph.add_edge("rag", "citation_validator")
-        graph.add_edge("citation_validator", "critic")
+        graph.add_conditional_edges(
+            "citation_validator",
+            self._route_to_critic,
+            {
+                "critic": "critic",
+                "skip_critic": "skip_critic",
+            },
+        )
         graph.add_conditional_edges(
             "critic",
             self._route_after_critic,
             {
                 "safety": "safety",
+                "skip_safety": "skip_safety",
                 "retry_rag": "prepare_rag_retry",
                 "retry_summary": "prepare_summary_retry",
             },
@@ -277,8 +313,23 @@ class ChatWorkflow:
         graph.add_edge("prepare_rag_retry", "rag")
         graph.add_edge("prepare_summary_retry", "summary")
         graph.add_edge("safety", "final_answer")
+        graph.add_conditional_edges(
+            "skip_critic",
+            self._route_to_safety,
+            {
+                "safety": "safety",
+                "skip_safety": "skip_safety",
+            },
+        )
+        graph.add_edge("skip_safety", "final_answer")
         graph.add_edge("final_answer", END)
         return self._compile_graph(graph)
+
+    def _cache_owner_scope(self, user_id: Optional[str]) -> str:
+        """Scope court du cache pour éviter les collisions entre utilisateurs."""
+        if not user_id:
+            return "shared"
+        return hashlib.sha256(user_id.strip().lower().encode("utf-8")).hexdigest()[:16]
 
     def _agent_node(
         self,
@@ -368,6 +419,35 @@ class ChatWorkflow:
         ).info("LangGraph node completed.")
         return state.to_dict()
 
+    async def _skip_critic_node(self, payload: GraphStateDict) -> GraphStateDict:
+        state = GraphState.from_mapping(payload)
+        state.critic_passed = True
+        state.critic_score = None
+        state.critic_feedback = "Critic skipped by quality policy."
+        state.evaluation["critic"] = {"skipped": True, "reason": "route_policy"}
+        state.record_result(
+            AgentResult(
+                agent="critic_skipped",
+                output=state.critic_feedback,
+                metadata={"skipped": True},
+            )
+        )
+        return state.to_dict()
+
+    async def _skip_safety_node(self, payload: GraphStateDict) -> GraphStateDict:
+        state = GraphState.from_mapping(payload)
+        state.safety_passed = True
+        state.safety_feedback = "Safety skipped by runtime policy."
+        state.evaluation["safety"] = {"skipped": True, "reason": "runtime_policy"}
+        state.record_result(
+            AgentResult(
+                agent="safety_skipped",
+                output=state.safety_feedback,
+                metadata={"skipped": True},
+            )
+        )
+        return state.to_dict()
+
     def _compile_graph(self, graph: StateGraph):
         if not settings.langgraph_checkpoint_enabled:
             return graph.compile()
@@ -403,18 +483,45 @@ class ChatWorkflow:
             return "critic"
         return "rag"
 
+    def _route_to_critic(self, payload: GraphStateDict) -> str:
+        if self._requires_critic(payload):
+            return "critic"
+        return "skip_critic"
+
     def _route_after_critic(self, payload: GraphStateDict) -> str:
         if payload.get("critic_passed", False):
-            return "safety"
+            return self._route_to_safety(payload)
         if payload.get("correction_attempted", False):
-            return "safety"
+            return self._route_to_safety(payload)
 
         route = payload.get("route") or "rag"
         if route in {"rag", "parallel"} and payload.get("search_results"):
             return "retry_rag"
         if route in {"direct_answer", "summary", "simple_llm", "planning", "correction"}:
             return "retry_summary"
-        return "safety"
+        return self._route_to_safety(payload)
+
+    def _route_to_safety(self, payload: GraphStateDict) -> str:
+        if settings.safety_enabled:
+            return "safety"
+        return "skip_safety"
+
+    def _requires_critic(self, payload: GraphStateDict) -> bool:
+        if not settings.critic_enabled:
+            return False
+        route = str(payload.get("route") or "")
+        enabled_routes = {item.strip() for item in settings.critic_routes.split(",") if item.strip()}
+        route_enabled = "*" in enabled_routes or route in enabled_routes
+        if not route_enabled:
+            return False
+        if route in {"rag", "document_qa"} or bool(payload.get("search_results")):
+            return True
+        decision = payload.get("planner_decision")
+        if isinstance(decision, dict) and decision.get("requires_critic") is False:
+            return False
+        if isinstance(decision, PlannerDecision) and not decision.requires_critic:
+            return False
+        return True
 
     def _fallback_result(self, node_name: str, exc: Exception, state: GraphState) -> AgentResult:
         agent_name = node_name.replace("Agent", "").lower()

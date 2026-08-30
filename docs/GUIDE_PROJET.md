@@ -1,7 +1,7 @@
 # Guide du projet — Agentic RAG Platform
 
 > Référence d'architecture vérifiée contre le code de la branche
-> `feature/async-io-performance-fix` le **18 août 2026**.
+> `architecture-improvements` le **30 août 2026**.
 
 ## 1. Objectif et périmètre
 
@@ -58,8 +58,8 @@ organisation remplace l'ancienne création de services au niveau des routers.
 
 - LLM : client `AsyncOpenAI`, appels réellement asynchrones.
 - Redis : client `redis.asyncio` pour les opérations courantes.
-- MongoDB : PyMongo reste synchrone, mais `aggregate`, `insert_many` et
-  `delete_many` sont exécutés via `asyncio.to_thread`.
+- MongoDB : PyMongo reste synchrone, mais `aggregate`, `bulk_write`,
+  `insert_many` fallback et `delete_many` sont exécutés via `asyncio.to_thread`.
 - Upload : la copie du fichier est déportée via `asyncio.to_thread`.
 - Parsing PDF/CSV : exécuté localement et synchroniquement après la copie ; un
   fichier très volumineux peut donc encore occuper le worker.
@@ -92,7 +92,7 @@ docs/                               documentation technique
 | Domaine | Technologie | Usage réel |
 |---|---|---|
 | API | FastAPI, Uvicorn, Pydantic | Routes HTTP et validation |
-| Orchestration | LangGraph `StateGraph` | Graphe conditionnel de 17 nœuds |
+| Orchestration | LangGraph `StateGraph` | Graphe conditionnel de 19 nœuds |
 | Outils | Calculatrice, inventaire, validateur de citations | Exécution locale/contrôlée |
 | LLM | Hugging Face Router via `AsyncOpenAI` | Planning, réponse directe, RAG, critic |
 | Embeddings | Hugging Face `feature-extraction` via `httpx` | Ingestion, vector search, reranking |
@@ -187,15 +187,17 @@ flowchart TD
     Final --> End([ChatResponse])
 ```
 
-Le graphe contient 17 nœuds : 14 associés à une classe d'agent et 3 nœuds
-techniques (`greeting`, `prepare_rag_retry`, `prepare_summary_retry`). Voir
+Le graphe contient 19 nœuds : 14 associés à une classe d'agent et 5 nœuds
+techniques (`greeting`, `skip_critic`, `skip_safety`, `prepare_rag_retry`,
+`prepare_summary_retry`). Voir
 [AGENTS.md](AGENTS.md) pour le détail.
 
 ### Nuances importantes du routage
 
-- Les champs `requires_critic` et `requires_safety` du `PlannerDecision` sont
-  informatifs : le graphe exécute actuellement critic et safety dans tous les
-  chemins non mis en cache.
+- Les champs `requires_critic` et `requires_safety` du `PlannerDecision`
+  alimentent les quality gates. Le critic reste activé par défaut sur les routes
+  génératives/RAG, mais les routes déterministes peuvent passer par
+  `critic_skipped`.
 - Une route `document_qa` avec `requires_rag=False` fait tout de même search,
   hybrid retrieval, reranking et compression, puis va directement au critic.
 - Le retry RAG fonctionne pour `route="rag"` avec documents présents.
@@ -247,14 +249,14 @@ structurelle : elle ne prouve pas que la phrase citée est réellement supporté
 | Usage | Clé | Expiration |
 |---|---|---:|
 | Compte | `user:<email>` | aucune (`ttl=-1`) |
-| Conversation | `conversation:<id>:messages` | `REDIS_TTL_SECONDS` |
-| Réponse chat | `chat:<id>:<message normalisé>` | `REDIS_TTL_SECONDS` |
+| Conversation | `conversation:<owner_hash>:<id>:messages` | `REDIS_TTL_SECONDS` |
+| Réponse chat | `chat:<owner_hash>:<id>:docs:<version>:<message>` | `REDIS_TTL_SECONDS` |
 
-Le cache est un exact-match sur `strip().lower()`. Il ne contient ni
-l'historique, ni l'utilisateur, ni la version du corpus, du prompt ou du modèle.
-Dans une même conversation, une réponse peut donc devenir obsolète après une
-ingestion ou un changement de contexte. Un cache hit ne réexécute aucun agent et
-n'ajoute pas la répétition du message à l'historique.
+Le cache est un exact-match sur `strip().lower()`, mais il contient maintenant
+un hash de l'utilisateur et `documents:version`. Une ingestion ou un reset
+incrémente cette version et invalide les réponses dépendantes du corpus. Il ne
+versionne pas encore le prompt ou le modèle. Un cache hit ne réexécute aucun
+agent et n'ajoute pas la répétition du message à l'historique.
 
 Si Redis est indisponible au démarrage, un stockage Python local est utilisé. Si
 une opération échoue après une connexion initiale, l'opération concernée tombe
@@ -276,19 +278,22 @@ répliquées dans ce store. Ce mode est mono-process et non persistant.
 - `upload` accepte PDF/CSV, neutralise les chemins avec `Path(filename).name`,
   conserve le fichier sous `backend/data/` et ajoute un suffixe UUID si le nom
   existe déjà.
-- `batch` lit un chemin du serveur, non récursif par défaut, et accepte un filtre
-  de types.
+- `batch` lit un chemin du serveur sous `BATCH_INGEST_ROOT`, non récursif par
+  défaut, accepte un filtre de types et peut exiger un admin via
+  `BATCH_INGEST_REQUIRES_ADMIN`.
 
 Avant insertion, le service tente un embedding batch de `title + snippet`. Un
 échec n'annule pas l'ingestion : les documents restent disponibles en full-text.
-L'insertion utilise `insert_many` sans upsert ni déduplication. Réingérer le même
-fichier crée donc des doublons. Il n'existe pas encore de limite de taille upload,
-de suppression du fichier si l'indexation échoue, ni de restriction du chemin
-`batch` à un répertoire autorisé ; cette dernière route doit être durcie avant
-exposition à des utilisateurs non fiables.
+L'insertion utilise des IDs stables, déduplique les fragments en mémoire, puis
+fait un `bulk_write(..., upsert=True)`. Les documents portent `owner_id` et
+`visibility`; `DOCUMENT_SCOPE_MODE=owner` filtre les recherches par utilisateur
+tout en laissant visibles les documents `shared`. Les limites `MAX_UPLOAD_BYTES`,
+`MAX_BATCH_FILES`, `MAX_INGEST_DOCUMENTS` et `MAX_INGESTED_SNIPPET_CHARS`
+bornent les entrées.
 
-Le reset supprime tous les documents de la collection et les clés Redis de
-conversation/cache, mais préserve les comptes `user:*` et les index Atlas.
+Le reset préserve les comptes `user:*` et les index Atlas. En mode `owner`, un
+non-admin supprime seulement ses documents et son runtime ; un admin configuré
+dans `ADMIN_EMAILS` peut effectuer un reset global.
 
 ## 10. Frontend actuel
 
@@ -334,18 +339,19 @@ que CORS bloque la requête ; elle ne prouve pas une panne du RAG.
 - JWT : algorithme et durée configurables ; 120 minutes par défaut.
 - Hors `development`, `local` et `test`, le backend refuse la clé JWT par défaut.
 - CORS : origines explicites et regex LAN privée uniquement en dev/local.
-- Rate limit : 60 requêtes/minute/IP, mémoire locale du processus ; `/health`
-  est exempté.
+- Rate limit : `RATE_LIMIT_REQUESTS_PER_MINUTE` par minute/IP ; Redis est
+  utilisé quand disponible, sinon le middleware retombe sur le compteur mémoire
+  local ; `/health` est exempté.
 - Headers : frame denial, nosniff, CSP, referrer et permissions policy.
 - Safety de sortie : regex pour secrets/tokens évidents ; revue LLM disponible
   dans le code mais désactivée dans le workflow.
 - Les prompts récents séparent question, documents et historique, traitent les
   documents comme données non fiables et exigent le grounding/citations.
 
-Limites : pas de révocation JWT, pas de rôles, pas d'autorisation par
-conversation, rate limit non distribué, reset et batch accessibles à tout compte
-authentifié, protection prompt injection non exhaustive, secrets potentiellement
-présents dans les sorties debug/logs, et pas de limite de taille des fichiers.
+Limites : pas de révocation JWT, pas de rôles fins, autorisation documentaire
+basée sur l'email plutôt que sur un tenant dédié, protection prompt injection non
+exhaustive, secrets potentiellement présents dans les sorties debug/logs, et
+parsing ingestion encore exécuté dans le worker API.
 
 ## 12. Configuration essentielle
 
@@ -361,9 +367,16 @@ présents dans les sorties debug/logs, et pas de limite de taille des fichiers.
 | `MONGODB_URI` | vide | recherche/ingestion indisponibles si vide |
 | `MONGODB_SEARCH_INDEX` | `documents_search` | doit exister dans Atlas |
 | `MONGODB_VECTOR_INDEX` | `documents_vector` | champ `embedding` |
+| `DOCUMENT_SCOPE_MODE` | `shared` local / `owner` hors local | filtre documentaire par utilisateur |
+| `DOCUMENT_DEFAULT_VISIBILITY` | `shared` local / `private` hors local | visibilité des fragments ingérés |
+| `MAX_UPLOAD_BYTES` | `10485760` | taille maximale d'un fichier uploadé |
+| `MAX_BATCH_FILES` | `20` | limite d'un import batch |
+| `MAX_INGEST_DOCUMENTS` | `500` | limite de fragments par requête |
 | `MAX_USER_MESSAGE_CHARS` | `8000` | contrôle dans `ChatWorkflow` |
 | `MAX_RAG_CONTEXT_CHARS` | `4000` | compression locale |
 | `MAX_RAG_DOCUMENTS` | `5` | nombre gardé après reranking |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | rate limit HTTP |
+| `CITATION_SUPPORT_REQUIRED` | `false` | support lexical bloquant ou informatif |
 | `LLM_TIMEOUT_SECONDS` | `60` | timeout client LLM |
 | `LANGFUSE_ENABLED` | `false` | `.env.example` le met à `true` |
 | `LANGGRAPH_CHECKPOINT_ENABLED` | `false` | `MemorySaver` seulement |
@@ -401,10 +414,10 @@ Loguru écrit sur console et, par défaut, dans
 `X-Request-ID`. Le workflow ajoute un contexte session/transaction/agent/route et
 mesure la latence des nœuds.
 
-Commandes validées le 18 août 2026 :
+Commandes validées le 30 août 2026 :
 
 ```bash
-make test                       # 21 tests backend : OK
+make test                       # 32 tests backend : OK
 cd frontend && npm run build    # build Next.js + types : OK
 ```
 
@@ -412,10 +425,11 @@ Voir [EVALUATION.md](EVALUATION.md) pour le détail et le benchmark retrieval.
 
 ## 15. Limites prioritaires
 
-1. Revoir la clé de cache et invalider le cache lors des changements de corpus.
+1. Ajouter rôles/tenants explicites et migrer les documents legacy vers ce
+   modèle.
 2. Rendre le health check LLM réel ou renommer la pastille modèle.
-3. Ajouter upsert/déduplication et limites de taille à l'ingestion.
-4. Restreindre la route batch et réserver reset à un rôle administrateur.
+3. Sortir l'ingestion PDF/CSV lourde du worker API vers une file/job.
+4. Ajouter une UI admin pour batch/reset au lieu de simples endpoints.
 5. Normaliser ou fusionner les scores dense/sparse avec une méthode calibrée.
 6. Ajouter tests frontend, tests d'intégration API, tests de charge et évaluation
    de groundedness/hallucination.

@@ -1,7 +1,7 @@
 # Agents et graphe LangGraph
 
 > Contrats vérifiés contre `backend/app/agents/`, `backend/app/state/` et
-> `backend/app/workflows/chat_workflow.py` le **18 août 2026**.
+> `backend/app/workflows/chat_workflow.py` le **30 août 2026**.
 
 ## 1. Ce que signifie « agent » dans ce projet
 
@@ -19,7 +19,7 @@ appel LLM monolithique.
 Le graphe contient :
 
 - 14 nœuds associés à une classe d'agent ;
-- 3 nœuds techniques définis dans `ChatWorkflow` ;
+- 5 nœuds techniques définis dans `ChatWorkflow` ;
 - 1 classe de critic déterministe appelée uniquement en fallback.
 
 Il n'existe plus de `SupervisorAgent` ni de classe `PlannerAgent` séparée. Le
@@ -107,7 +107,7 @@ la personnalisation contextuelle se dégradent.
 Il lit deux historiques :
 
 1. `state.history`, fourni par le frontend ;
-2. Redis, via `conversation:<conversation_id>:messages`.
+2. Redis, via `conversation:<owner_hash>:<conversation_id>:messages`.
 
 La règle est `request_context or stored_context`. Un historique frontend non
 vide remplace donc entièrement le contexte Redis pour ce tour. Il n'y a ni
@@ -192,10 +192,12 @@ elif requires_retrieval:
     route = "document_qa"
 ```
 
-`requires_critic` et `requires_safety` ne sont pas utilisés par le graphe pour
-sauter des étapes. Le champ `tools` du planner est exposé et logué, mais ne peut
-pas déclencher un outil arbitraire : les transitions et l'allowlist restent
-codées dans LangGraph.
+`requires_critic` et `requires_safety` participent aux quality gates, avec
+`CRITIC_ENABLED`, `CRITIC_ROUTES` et `SAFETY_ENABLED` comme garde-fous de
+configuration. Pour les routes documentaires, le critic reste imposé lorsque la
+route est configurée, même si le planner demande de l'ignorer. Le champ `tools`
+du planner est exposé et logué, mais ne peut pas déclencher un outil arbitraire :
+les transitions et l'allowlist restent codées dans LangGraph.
 
 ## 8. ToolExecutorAgent
 
@@ -237,16 +239,17 @@ noms, termes et expressions présents textuellement dans le corpus.
 vide. Les étapes suivantes ne peuvent alors pas fabriquer de preuves et le RAG
 doit annoncer qu'aucun document pertinent n'a été trouvé.
 
-Il transmet le message brut à `SearchService.search()`. La pipeline Atlas Search
+Il transmet le message brut et le `user_id` à `SearchService.search()`. La pipeline Atlas Search
 cherche dans :
 
 - `title`, boost 2 ;
 - `snippet` ;
 - `category`.
 
-La limite est fixée à 5 dans le service. L'agent conserve les `SearchResult`
-structurés et produit aussi `search_output`, un texte avec titre, fichier, page
-et snippet.
+La limite est fixée à 5 dans le service. En `DOCUMENT_SCOPE_MODE=owner`, le
+service filtre sur les documents du propriétaire et les documents `shared`.
+L'agent conserve les `SearchResult` structurés et produit aussi `search_output`,
+un texte avec titre, fichier, page et snippet.
 
 Si MongoDB ou l'index Search échoue, le wrapper du nœud remplace les résultats
 par une liste vide et laisse le graphe continuer.
@@ -276,15 +279,14 @@ Le store :
 2. exécute `$vectorSearch` sur le champ `embedding` ;
 3. demande `numCandidates=max(limit*10, 50)` et jusqu'à 8 résultats.
 
-L'agent concatène full-text puis vectoriel, déduplique par
-`(title, file_name or source, page_number)`, trie tous les scores bruts par ordre
-décroissant et garde 8 candidats.
+L'agent fusionne full-text puis vectoriel par Reciprocal Rank Fusion. Il
+déduplique d'abord par `document_id`, puis par
+`(title, file_name or source, page_number)` si l'identifiant manque. Un document
+présent dans les deux branches gagne donc du score au lieu de perdre son second
+signal.
 
-Attention : les scores Atlas Search et Vector Search ne sont pas sur une échelle
-commune. Leur tri direct n'est pas une vraie fusion de rang. La première version
-d'un doublon gagne ; le score des deux branches n'est pas combiné.
-
-Métriques : `full_text_count`, `vector_count`, `hybrid_count`.
+Métriques : `full_text_count`, `vector_count`, `hybrid_count`,
+`hybrid_fusion`.
 
 ## 11. RerankerAgent
 
@@ -416,22 +418,23 @@ documents rerankés réellement envoyés.
 
 Fichier : `backend/app/agents/citation_validator_agent.py`
 
-**Rôle.** Vérifier après génération que les références `[n]` existent et restent
-dans la plage des documents fournis.
+**Rôle.** Vérifier après génération que les références `[n]` existent, restent
+dans la plage des documents fournis et possèdent au moins un signal lexical de
+support.
 
 **Importance.** Un texte fluide n'est pas nécessairement traçable. Cet agent
 rend détectables les réponses sans citation ou avec des références inventées et
 transmet l'échec au critic avant publication.
 
 **En cas d'absence.** Une réponse RAG pourrait être acceptée avec `[99]` ou sans
-aucun label. **Limite actuelle :** l'agent valide la structure, pas le fait que
-chaque phrase soit réellement démontrée par le passage cité.
+aucun label. **Limite actuelle :** le support lexical repère les citations
+déconnectées, mais ne prouve pas une entailment sémantique complète.
 
 Il exécute `CitationValidatorTool` après chaque génération RAG et avant le
 critic. Le contrôle porte sur le corps avant `Sources:` : présence d'un label
 quand des documents existent et absence de labels hors plage. Sans document, le
-contrôle est marqué `skipped` et réussi. Il ne vérifie pas le lien sémantique
-entre une affirmation et le passage cité.
+contrôle est marqué `skipped` et réussi. `CITATION_SUPPORT_REQUIRED=true` rend
+le signal lexical bloquant ; sinon il reste exposé en métadonnées.
 
 ## 16. LLMCriticAgent et CriticAgent
 

@@ -1,4 +1,4 @@
-"""Nœud de validation structurelle des citations après génération RAG."""
+"""Nœud de validation des citations après génération RAG."""
 
 from app.logger import logger
 from app.models.chat_models import AgentResult

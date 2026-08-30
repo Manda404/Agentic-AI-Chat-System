@@ -5,7 +5,7 @@ from app.tools import CalculatorTool, CitationValidatorTool, DocumentListTool
 
 
 class _FakeSearchService:
-    async def list_indexed_documents(self, limit: int = 200):
+    async def list_indexed_documents(self, limit: int = 200, owner_id: str | None = None):
         return [
             {"title": "Guide - Page 1", "file_name": "guide.pdf", "page_number": 1, "source": "pdf"},
             {"title": "Guide - Page 2", "file_name": "guide.pdf", "page_number": 2, "source": "pdf"},
@@ -36,6 +36,28 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         ]
         result = CitationValidatorTool().run("Grounded claim [1].", documents)
         self.assertTrue(result.success)
+
+    def test_citation_validator_can_enforce_lexical_support(self):
+        documents = [
+            SearchResult(
+                title="LangGraph Guide",
+                snippet="LangGraph orchestrates stateful multi-agent workflows.",
+                score=1.0,
+                source="test",
+            )
+        ]
+        accepted = CitationValidatorTool(require_support=True).run(
+            "LangGraph orchestrates workflows [1].",
+            documents,
+        )
+        rejected = CitationValidatorTool(require_support=True).run(
+            "PostgreSQL stores payments [1].",
+            documents,
+        )
+
+        self.assertTrue(accepted.success)
+        self.assertFalse(rejected.success)
+        self.assertEqual(rejected.metadata["unsupported_labels"], [1])
 
     def test_citation_validator_rejects_missing_or_unknown_labels(self):
         documents = [

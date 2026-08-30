@@ -13,9 +13,9 @@ class DocumentListTool:
         self.search_service = search_service
         self.limit = limit
 
-    async def run(self) -> ToolResult:
+    async def run(self, owner_id: str | None = None) -> ToolResult:
         try:
-            records = await self.search_service.list_indexed_documents(limit=self.limit)
+            records = await self.search_service.list_indexed_documents(limit=self.limit, owner_id=owner_id)
         except Exception as exc:
             return ToolResult(
                 tool=self.name,
@@ -59,5 +59,6 @@ class DocumentListTool:
                 "indexed_records_scanned": len(records),
                 "scan_limit": self.limit,
                 "truncated": len(records) >= self.limit,
+                "owner_scoped": bool(owner_id),
             },
         )

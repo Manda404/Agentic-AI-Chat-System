@@ -64,7 +64,11 @@ class RAGAgent:
             )
             state.rag_output = self._append_sources(answer.strip(), state)
             state.draft_answer = state.rag_output
-            metadata = {"grounded": True, "sources_count": len(state.search_results)}
+            metadata = {
+                "grounded": True,
+                "sources_count": len(state.search_results),
+                "document_ids": [item.document_id for item in documents if item.document_id],
+            }
         except Exception as exc:
             logger.bind(conversation_id=state.conversation_id, reason=str(exc)).exception(
                 "RAG generation failed; falling back to search output."
@@ -97,6 +101,7 @@ class RAGAgent:
             location_text = f" ({', '.join(location)})" if location else ""
             lines.append(
                 f"[{index}] {item.title}{location_text}\n"
+                f"Document ID: {item.document_id or 'unknown'}\n"
                 f"Score: {item.score}\n"
                 f"Snippet: {item.snippet}"
             )

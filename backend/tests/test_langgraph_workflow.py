@@ -30,7 +30,7 @@ class FakeSearchService:
     index_name = "test-index"
     collection = None
 
-    async def search(self, query: str):
+    async def search(self, query: str, owner_id: str | None = None):
         return [
             SearchResult(
                 title="LangGraph overview",
@@ -42,7 +42,7 @@ class FakeSearchService:
             )
         ]
 
-    async def list_indexed_documents(self, limit: int = 200):
+    async def list_indexed_documents(self, limit: int = 200, owner_id: str | None = None):
         return [
             {
                 "title": "LangGraph overview",
@@ -117,11 +117,11 @@ class FakeMemoryService:
         self.messages = {}
         self.values = {}
 
-    async def get_messages(self, conversation_id):
-        return self.messages.get(conversation_id, [])
+    async def get_messages(self, conversation_id, owner_id=None):
+        return self.messages.get((owner_id, conversation_id), [])
 
-    async def append_message(self, conversation_id, role, content):
-        self.messages.setdefault(conversation_id, []).append({"role": role, "content": content})
+    async def append_message(self, conversation_id, role, content, owner_id=None):
+        self.messages.setdefault((owner_id, conversation_id), []).append({"role": role, "content": content})
 
     async def get_value(self, key):
         return self.values.get(key)
