@@ -16,7 +16,7 @@ def score_response(response: ChatResponse, expected_route: str, expect_sources: 
     route_ok = response.route == expected_route
     non_empty = bool(response.answer.strip())
     sources_ok = response_has_sources(response) if expect_sources else True
-    critic_ok = response.critic_passed or response.critic_passed is False
+    critic_ok = any(result.agent in {"critic", "critic_skipped"} for result in response.agent_results)
     passed = route_ok and non_empty and sources_ok and critic_ok
     return {
         "passed": passed,

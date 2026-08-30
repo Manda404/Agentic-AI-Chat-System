@@ -28,7 +28,12 @@ class MongoVectorStore:
         self.search_service = search_service
         self.embedding_service = embedding_service
 
-    async def similarity_search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def similarity_search(
+        self,
+        query: str,
+        limit: int = 5,
+        owner_id: str | None = None,
+    ) -> list[SearchResult]:
         """Vectorise la requête puis interroge l'index Atlas Vector Search."""
         collection = self.search_service.collection
         if collection is None:
@@ -41,18 +46,23 @@ class MongoVectorStore:
             return []
 
         try:
+            vector_limit = max(limit * 5, 20)
             pipeline = [
                 {
                     "$vectorSearch": {
                         "index": settings.mongodb_vector_index,
                         "path": "embedding",
                         "queryVector": query_embedding,
-                        "numCandidates": max(limit * 10, 50),
-                        "limit": limit,
+                        "numCandidates": max(vector_limit * 10, 50),
+                        "limit": vector_limit,
                     }
                 },
                 {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
             ]
+            access_filter = self.search_service._search_access_filter(owner_id)
+            if access_filter:
+                pipeline.append({"$match": access_filter})
+            pipeline.append({"$limit": limit})
             hits = await asyncio.to_thread(lambda: list(collection.aggregate(pipeline)))
             return [
                 SearchResult(
@@ -62,6 +72,8 @@ class MongoVectorStore:
                     source=hit.get("source", "mongodb-vector"),
                     page_number=hit.get("page_number"),
                     file_name=hit.get("file_name"),
+                    document_id=str(hit.get("document_id") or hit.get("_id") or "") or None,
+                    embedding=hit.get("embedding"),
                 )
                 for hit in hits
             ]

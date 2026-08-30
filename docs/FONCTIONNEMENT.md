@@ -1,7 +1,7 @@
 # Fonctionnement du projet — parcours complet
 
 > Lecture chronologique du comportement réel, vérifiée contre le code le
-> **18 août 2026**.
+> **30 août 2026**.
 
 ## 1. Démarrage
 
@@ -83,16 +83,18 @@ bouton actuel.
 2. Le backend neutralise le chemin du nom de fichier.
 3. Le fichier est conservé dans `backend/data` ; un suffixe UUID évite
    l'écrasement d'un fichier homonyme.
-4. Un PDF produit un document par page non vide ; une page est tronquée à 5 000
-   caractères.
+4. Un PDF produit un document par page non vide ; une page est bornée par
+   `MAX_INGESTED_SNIPPET_CHARS`.
 5. Un CSV produit un document par ligne.
 6. Le backend demande en batch les embeddings de `title + snippet`.
-7. Les documents sont insérés dans MongoDB.
+7. Le backend ajoute `owner_id`, `visibility`, des IDs stables, puis upsert les
+   documents dans MongoDB.
 
 Si les embeddings échouent, l'étape 7 continue sans champ `embedding`. La
 recherche full-text reste possible, contrairement à la recherche vectorielle.
-Une nouvelle ingestion ne remplace pas les documents existants : elle ajoute de
-nouvelles lignes et peut créer des doublons.
+Une nouvelle ingestion remplace les fragments déjà connus au lieu de créer des
+doublons. Les limites `MAX_UPLOAD_BYTES`, `MAX_BATCH_FILES` et
+`MAX_INGEST_DOCUMENTS` bornent les entrées.
 
 ## 5. Envoi d'un message
 
@@ -132,12 +134,13 @@ Au-delà de `MAX_USER_MESSAGE_CHARS`, la réponse est immédiate :
 La clé est :
 
 ```text
-chat:<conversation_id>:<message.strip().lower()>
+chat:<owner_hash>:<conversation_id>:docs:<documents_version>:<message.strip().lower()>
 ```
 
 Un hit retourne `route="cache"` sans exécuter LangGraph et sans ajouter la
-répétition à l'historique. La clé ignore l'historique, le corpus, le modèle et les
-prompts ; elle peut donc renvoyer une réponse ancienne dans la même conversation.
+répétition à l'historique. La clé isole les utilisateurs et inclut
+`documents:version`, incrémenté après ingestion/reset. Elle ignore encore le
+modèle et les prompts.
 
 ### 6.4 Cache miss
 
@@ -184,8 +187,11 @@ Il transforme l'intention en route. Les flags ont priorité :
 - sinon mapping vers `greeting`, `direct_answer`, `calculation`,
   `document_list` ou `fallback`.
 
-Les flags `requires_critic` et `requires_safety` ne modifient pas actuellement le
-graphe : ces deux étapes restent obligatoires hors cache.
+Les flags `requires_critic` et `requires_safety` participent maintenant aux
+quality gates. Le critic est limité par `CRITIC_ENABLED` et `CRITIC_ROUTES`,
+mais une route documentaire garde le critic même si le planner demande de le
+sauter. Le safety peut être désactivé par `SAFETY_ENABLED`, même s'il reste
+activé par défaut.
 
 ### 7.4 Branches
 
@@ -224,8 +230,9 @@ MongoDB Atlas Search cherche la requête dans `title` (boost 2), `snippet` et
 ### HybridRetrieverAgent
 
 Il calcule l'embedding de la requête, exécute `$vectorSearch` avec jusqu'à 8
-résultats, concatène full-text et vectoriel, déduplique, trie les scores bruts et
-garde 8 candidats. Un échec vectoriel conserve le full-text.
+résultats, fusionne full-text et vectoriel par RRF, déduplique par
+`document_id` quand disponible et garde 8 candidats. Un échec vectoriel conserve
+le full-text.
 
 ### RerankerAgent
 
@@ -264,8 +271,9 @@ secours, avec la section Sources.
 Après `RAGAgent`, ce nœud vérifie les labels `[n]` dans le corps de la réponse :
 au moins un label quand des documents existent, et aucun numéro supérieur au
 nombre de documents disponibles. Sans document, la validation est marquée
-comme ignorée et réussie. Ce contrôle est structurel : il ne prouve pas que la
-phrase citée est sémantiquement supportée par la source.
+comme ignorée et réussie. Il produit aussi un signal de support lexical entre la
+phrase citante et le passage cité. Ce signal est informatif par défaut et devient
+bloquant avec `CITATION_SUPPORT_REQUIRED=true`.
 
 ## 9. Critic, retry, safety et finalisation
 

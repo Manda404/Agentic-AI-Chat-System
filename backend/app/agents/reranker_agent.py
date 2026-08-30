@@ -98,15 +98,25 @@ class RerankerAgent:
         if not self.embedding_service or not candidates:
             return [], False
         try:
-            texts = [f"{item.title} {item.snippet}" for item in candidates]
             query_embedding = await self.embedding_service.embed_query(user_message)
-            doc_embeddings = await self.embedding_service.embed_texts(texts)
+            doc_embeddings = await self._document_embeddings(candidates)
             return [self._cosine_similarity(query_embedding, doc) for doc in doc_embeddings], True
         except Exception as exc:
             logger.bind(reason=str(exc)).warning(
                 "Semantic reranking failed; falling back to lexical score only."
             )
             return [], False
+
+    async def _document_embeddings(self, candidates: list[SearchResult]) -> list[list[float]]:
+        """Réutilise les embeddings stockés et ne calcule que ceux qui manquent."""
+        embeddings: list[list[float] | None] = [item.embedding for item in candidates]
+        missing_indexes = [index for index, embedding in enumerate(embeddings) if not embedding]
+        if missing_indexes:
+            texts = [f"{candidates[index].title} {candidates[index].snippet}" for index in missing_indexes]
+            generated = await self.embedding_service.embed_texts(texts)
+            for index, embedding in zip(missing_indexes, generated):
+                embeddings[index] = embedding
+        return [embedding or [] for embedding in embeddings]
 
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
         """Similarité cosinus pure Python, sans dépendance numpy."""

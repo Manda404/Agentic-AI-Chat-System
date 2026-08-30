@@ -1,12 +1,12 @@
 # Tests et évaluation
 
-> Inventaire vérifié et commandes exécutées le **18 août 2026**.
+> Inventaire vérifié et commandes exécutées le **30 août 2026**.
 
 ## 1. État vérifié
 
 ```bash
 make test
-# Ran 22 tests ... OK
+# Ran 32 tests ... OK
 
 cd frontend
 npm run build
@@ -23,10 +23,11 @@ La suite utilise `unittest` et `IsolatedAsyncioTestCase`.
 | Fichier | Couverture réelle |
 |---|---|
 | `test_langgraph_workflow.py` | compilation, appels d'agents, greeting, chemins RAG/outils, citation validator, retry direct, critic/safety, rédaction de secret |
-| `test_data_reset.py` | reset Redis en conservant les comptes, suppression MongoDB sans supprimer collection/index |
+| `test_data_reset.py` | reset Redis global et owner-scoped en conservant les comptes, suppression MongoDB sans supprimer collection/index |
 | `test_prompt_contracts.py` | inventaire des prompts, JSON structuré, résumé documentaire via RAG, contraintes compressor/reranker |
 | `test_rag_prompt.py` | séparation question/documents/historique, grounding, citations, langue, calculs et injection indirecte |
-| `test_tools.py` | calcul AST sûr, refus d'exécution de code, inventaire documentaire et validation structurelle des citations |
+| `test_tools.py` | calcul AST sûr, refus d'exécution de code, inventaire documentaire et validation structurelle + support lexical des citations |
+| `test_retrieval_improvements.py` | fusion RRF, réutilisation embeddings, compression sélective, IDs stables, filtres owner, métadonnées d'ingestion |
 
 Les tests du workflow utilisent des fakes pour le LLM, la mémoire et le search.
 Ils ne contactent normalement ni Redis ni MongoDB et ne mesurent pas la qualité
@@ -46,11 +47,11 @@ LANGFUSE_ENABLED=false make test
 
 - routes FastAPI avec un vrai client HTTP ;
 - JWT expiré, `/auth/me` et restauration de session frontend ;
-- cache hit et invalidation ;
+- cache hit et invalidation via API HTTP ;
 - exécution complète d'un second appel LLM pendant les retries critic ;
 - panne Redis après démarrage ;
-- ingestion réelle PDF/CSV, doublons, taille de fichier ;
-- CORS, rate limit et headers ;
+- ingestion réelle PDF/CSV, limites upload/batch et erreurs de parsing ;
+- CORS, rate limit Redis et headers ;
 - composants/interactions frontend ;
 - charge, concurrence et régression de performance async.
 
@@ -75,18 +76,17 @@ documentaire, hors corpus, résumé, correction et demande ambiguë.
 Il n'existe pas actuellement de CLI ou de cible Make dédiée à cet évaluateur.
 Il faut l'instancier depuis un script ou un test.
 
-### Limite de `critic_observed`
+### `critic_observed`
 
 `score_response()` calcule :
 
 ```python
-response.critic_passed or response.critic_passed is False
+any(result.agent in {"critic", "critic_skipped"} for result in response.agent_results)
 ```
 
-Comme `critic_passed` est toujours un booléen dans `ChatResponse`, cette
-expression vaut toujours `True`. La métrique ne prouve donc pas que le critic a
-réellement été exécuté. Pour cela, il faudrait vérifier `agents_used`,
-`agent_results` ou la présence d'une évaluation critic.
+La métrique vérifie donc maintenant que le critic a été exécuté ou explicitement
+sauté par politique, au lieu de s'appuyer seulement sur le booléen
+`critic_passed`.
 
 ### Limites générales
 
@@ -118,7 +118,8 @@ Le benchmark mesure trois étages :
 3. `HUGGINGFACE_API_KEY` valide pour la branche dense/sémantique ;
 4. catalogue `backend/data/ai_tooling_catalog.csv` déjà ingéré via
    `/api/v1/ingest/sample-data` ;
-5. idéalement, collection vidée avant ingestion afin d'éviter les doublons.
+5. idéalement, corpus de test propre pour éviter que des documents hors jeu
+   d'évaluation influencent les scores.
 
 La cible `/ingest/sample-data` exige un JWT. Le bouton `INGESTION DATA` du
 frontend appelle plutôt `/ingest/batch`, qui ingère tout le dossier `data`.

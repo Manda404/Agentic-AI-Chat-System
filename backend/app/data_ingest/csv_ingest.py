@@ -17,12 +17,20 @@ def load_documents_from_csv(file_path: str) -> List[Dict[str, str]]:
     documents: List[Dict[str, str]] = []
     with open(file_path, newline="", encoding="utf-8") as csv_file:
         reader = csv.DictReader(csv_file)
+        required_columns = {"title", "snippet", "category"}
+        missing_columns = required_columns - set(reader.fieldnames or [])
+        if missing_columns:
+            raise ValueError(
+                f"CSV file is missing required columns: {sorted(missing_columns)}"
+            )
         for row in reader:
+            if not (row.get("title") or "").strip() and not (row.get("snippet") or "").strip():
+                continue
             documents.append(
                 {
-                    "title": row["title"],
-                    "snippet": row["snippet"],
-                    "category": row["category"],
+                    "title": row.get("title", ""),
+                    "snippet": row.get("snippet", ""),
+                    "category": row.get("category", ""),
                     "source": row.get("source", "csv-ingest"),
                 }
             )
@@ -30,5 +38,4 @@ def load_documents_from_csv(file_path: str) -> List[Dict[str, str]]:
         "CSV file parsed into documents."
     )
     return documents
-
 

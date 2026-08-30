@@ -59,7 +59,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_requests_per_minute)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(
     CORSMiddleware,

@@ -28,7 +28,7 @@ class ToolExecutorAgent:
         if isinstance(tool, CalculatorTool):
             result = tool.run(state.user_message)
         else:
-            result = await tool.run()
+            result = await tool.run(owner_id=state.metadata.get("user_id"))
 
         state.tool_results.append(result)
         state.draft_answer = result.output

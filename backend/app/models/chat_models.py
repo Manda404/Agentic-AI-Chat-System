@@ -20,12 +20,14 @@ class ChatRequest(BaseModel):
 
 class SearchResult(BaseModel):
     """Un résultat de recherche MongoDB Atlas (full-text ou vectoriel), avec sa localisation source si connue."""
+    document_id: Optional[str] = None
     title: str
     snippet: str
     score: float
     source: str
     page_number: Optional[int] = None
     file_name: Optional[str] = None
+    embedding: Optional[List[float]] = None
 
 class AgentResult(BaseModel):
     """Sortie brute d'un agent (search/summary/answer/...), affichée telle quelle côté frontend."""

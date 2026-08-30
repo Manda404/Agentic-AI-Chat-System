@@ -18,12 +18,22 @@ class EmbeddingService(Protocol):
 class VectorStorePort(Protocol):
     """Interface minimale pour brancher une future recherche vectorielle."""
 
-    async def similarity_search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def similarity_search(
+        self,
+        query: str,
+        limit: int = 5,
+        owner_id: str | None = None,
+    ) -> list[SearchResult]:
         """Retourne les documents proches de la requête."""
 
 
 class NullVectorStore:
     """Fallback sans dépendance : aucune recherche vectorielle disponible."""
 
-    async def similarity_search(self, query: str, limit: int = 5) -> list[SearchResult]:
+    async def similarity_search(
+        self,
+        query: str,
+        limit: int = 5,
+        owner_id: str | None = None,
+    ) -> list[SearchResult]:
         return []

@@ -16,10 +16,14 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+APP_ENV_VALUE = os.getenv("APP_ENV", "development")
+IS_LOCAL_ENV = APP_ENV_VALUE.lower() in {"development", "local", "test"}
+
+
 class Settings(BaseModel):
     """Toutes les variables de configuration du backend, avec leurs valeurs par défaut."""
     app_name: str = os.getenv("APP_NAME", "Agentic RAG Platform Backend")
-    app_env: str = os.getenv("APP_ENV", "development")
+    app_env: str = APP_ENV_VALUE
     api_prefix: str = os.getenv("API_PREFIX", "/api/v1")
     backend_cors_origins: List[str] = [
         item.strip()
@@ -60,6 +64,32 @@ class Settings(BaseModel):
     mongodb_search_index: str = os.getenv("MONGODB_SEARCH_INDEX", "documents_search")
     mongodb_vector_index: str = os.getenv("MONGODB_VECTOR_INDEX", "documents_vector")
     embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "384"))
+    document_scope_mode: Literal["shared", "owner"] = os.getenv(
+        "DOCUMENT_SCOPE_MODE",
+        "shared" if IS_LOCAL_ENV else "owner",
+    )
+    document_default_visibility: Literal["shared", "private"] = os.getenv(
+        "DOCUMENT_DEFAULT_VISIBILITY",
+        "shared" if IS_LOCAL_ENV else "private",
+    )
+    batch_ingest_root: str = os.getenv("BATCH_INGEST_ROOT", "data")
+    max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+    max_batch_files: int = int(os.getenv("MAX_BATCH_FILES", "20"))
+    max_ingest_documents: int = int(os.getenv("MAX_INGEST_DOCUMENTS", "500"))
+    max_ingested_snippet_chars: int = int(os.getenv("MAX_INGESTED_SNIPPET_CHARS", "5000"))
+    admin_emails: List[str] = [
+        item.strip().lower()
+        for item in os.getenv("ADMIN_EMAILS", "").split(",")
+        if item.strip()
+    ]
+    reset_requires_admin: bool = os.getenv(
+        "RESET_REQUIRES_ADMIN",
+        "false" if IS_LOCAL_ENV else "true",
+    ).lower() == "true"
+    batch_ingest_requires_admin: bool = os.getenv(
+        "BATCH_INGEST_REQUIRES_ADMIN",
+        "false" if IS_LOCAL_ENV else "true",
+    ).lower() == "true"
     
     langfuse_host: str = os.getenv("LANGFUSE_HOST", "http://localhost:3001")
     langfuse_public_key: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
@@ -73,6 +103,15 @@ class Settings(BaseModel):
     max_user_message_chars: int = int(os.getenv("MAX_USER_MESSAGE_CHARS", "8000"))
     max_rag_context_chars: int = int(os.getenv("MAX_RAG_CONTEXT_CHARS", "4000"))
     max_rag_documents: int = int(os.getenv("MAX_RAG_DOCUMENTS", "5"))
+    rate_limit_requests_per_minute: int = int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"))
+    critic_enabled: bool = os.getenv("CRITIC_ENABLED", "true").lower() == "true"
+    critic_routes: str = os.getenv(
+        "CRITIC_ROUTES",
+        "rag,direct_answer,summary,analysis,correction,planning",
+    )
+    safety_enabled: bool = os.getenv("SAFETY_ENABLED", "true").lower() == "true"
+    citation_support_required: bool = os.getenv("CITATION_SUPPORT_REQUIRED", "false").lower() == "true"
+    citation_support_min_overlap: int = int(os.getenv("CITATION_SUPPORT_MIN_OVERLAP", "1"))
     llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
     
     auth_secret_key: str = os.getenv("AUTH_SECRET_KEY", "change-me-in-real-projects")
