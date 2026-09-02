@@ -1,12 +1,14 @@
 import unittest
 
 from app.agents.context_compression_agent import ContextCompressionAgent
+from app.agents.corrective_rag_agent import CorrectiveRAGAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
 from app.agents.reranker_agent import RerankerAgent
 from app.memory.redis_memory import RedisMemoryService
 from app.models.chat_models import SearchResult
 from app.routers.ingest_router import _normalize_documents
 from app.services.search_service import SearchService
+from app.state import GraphState
 
 
 class _FakeEmbeddingService:
@@ -77,6 +79,73 @@ class RetrievalImprovementTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("LangGraph orchestrates", compressed)
         self.assertLessEqual(len(compressed), 220)
+
+    async def test_corrective_rag_keeps_relevant_documents(self):
+        agent = CorrectiveRAGAgent(min_relevance=0.2)
+        docs = [
+            SearchResult(
+                title="LangGraph overview",
+                snippet="LangGraph orchestrates stateful multi-agent workflows.",
+                score=1.0,
+                source="test",
+            ),
+            SearchResult(
+                title="Deployment notes",
+                snippet="Render deploys Docker services from GitHub repositories.",
+                score=1.0,
+                source="test",
+            ),
+        ]
+
+        grades = agent._grade_documents("How does LangGraph orchestrate agents?", docs)
+
+        self.assertEqual(grades[0].document.title, "LangGraph overview")
+        self.assertGreaterEqual(grades[0].relevance, 0.2)
+
+    async def test_corrective_rag_rewrites_irrelevant_context_once(self):
+        agent = CorrectiveRAGAgent(min_relevance=0.2)
+        state = GraphState(conversation_id="test", user_message="Explain vector databases")
+        state.route = "rag"
+        state.reranked_results = [
+            SearchResult(
+                title="Frontend buttons",
+                snippet="The page uses a submit button and a text input.",
+                score=0.1,
+                source="test",
+            )
+        ]
+
+        result = await agent.run(state)
+
+        self.assertEqual(result.agent, "corrective_rag")
+        self.assertEqual(state.reranked_results, [])
+        self.assertEqual(
+            state.retrieval_metrics["corrective_rag"]["decision"],
+            "rewrite",
+        )
+        self.assertEqual(state.metadata["retrieval_query"], "databases explain vector")
+
+    async def test_corrective_rag_falls_back_after_retrieval_retry(self):
+        agent = CorrectiveRAGAgent(min_relevance=0.2)
+        state = GraphState(conversation_id="test", user_message="Explain vector databases")
+        state.route = "rag"
+        state.retrieval_correction_attempted = True
+        state.reranked_results = [
+            SearchResult(
+                title="Frontend buttons",
+                snippet="The page uses a submit button and a text input.",
+                score=0.1,
+                source="test",
+            )
+        ]
+
+        await agent.run(state)
+
+        self.assertEqual(
+            state.retrieval_metrics["corrective_rag"]["decision"],
+            "fallback",
+        )
+        self.assertIn("sufficiently relevant", state.draft_answer or "")
 
     async def test_search_service_adds_stable_document_ids(self):
         service = SearchService.__new__(SearchService)

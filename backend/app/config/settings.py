@@ -103,6 +103,8 @@ class Settings(BaseModel):
     max_user_message_chars: int = int(os.getenv("MAX_USER_MESSAGE_CHARS", "8000"))
     max_rag_context_chars: int = int(os.getenv("MAX_RAG_CONTEXT_CHARS", "4000"))
     max_rag_documents: int = int(os.getenv("MAX_RAG_DOCUMENTS", "5"))
+    corrective_rag_enabled: bool = os.getenv("CORRECTIVE_RAG_ENABLED", "true").lower() == "true"
+    corrective_rag_min_relevance: float = float(os.getenv("CORRECTIVE_RAG_MIN_RELEVANCE", "0.2"))
     rate_limit_requests_per_minute: int = int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"))
     critic_enabled: bool = os.getenv("CRITIC_ENABLED", "true").lower() == "true"
     critic_routes: str = os.getenv(

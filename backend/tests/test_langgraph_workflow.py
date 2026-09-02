@@ -7,6 +7,7 @@ except ModuleNotFoundError as exc:
     raise unittest.SkipTest(f"Backend dependencies are not installed: {exc.name}")
 
 from app.agents.context_compression_agent import ContextCompressionAgent
+from app.agents.corrective_rag_agent import CorrectiveRAGAgent
 from app.agents.citation_validator_agent import CitationValidatorAgent
 from app.agents.final_answer_agent import FinalAnswerAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
@@ -20,7 +21,14 @@ from app.agents.search_agent import SearchAgent
 from app.agents.summary_agent import SummaryAgent
 from app.agents.tool_router_agent import ToolRouterAgent
 from app.agents.tool_executor_agent import ToolExecutorAgent
-from app.models.chat_models import ChatRequest, CriticReview, PlannerDecision, SafetyReview, SearchResult
+from app.models.chat_models import (
+    ChatRequest,
+    CorrectiveRAGReview,
+    CriticReview,
+    PlannerDecision,
+    SafetyReview,
+    SearchResult,
+)
 from app.state import GraphState
 from app.workflows.chat_workflow import ChatWorkflow
 from app.tools import CalculatorTool, CitationValidatorTool, DocumentListTool
@@ -31,6 +39,17 @@ class FakeSearchService:
     collection = None
 
     async def search(self, query: str, owner_id: str | None = None):
+        if query == "state graph agent orchestration":
+            return [
+                SearchResult(
+                    title="LangGraph corrected overview",
+                    snippet="A state graph can orchestrate agent execution with explicit edges.",
+                    score=1.0,
+                    source="test",
+                    page_number=2,
+                    file_name="guide.pdf",
+                )
+            ]
         return [
             SearchResult(
                 title="LangGraph overview",
@@ -84,7 +103,7 @@ class FakeLLMService:
             requires_retrieval=True,
             requires_rag=True,
             steps=["load_memory", "search_documents", "rerank_results", "generate_grounded_answer", "critic_review", "safety_review", "final_answer"],
-            tools=["memory", "search", "reranker", "rag", "critic", "safety"],
+            tools=["memory", "search", "reranker", "corrective_rag", "rag", "critic", "safety"],
             reason="mock document qa",
         )
 
@@ -93,6 +112,50 @@ class FakeLLMService:
 
     async def grounded_answer(self, question: str, retrieved_documents: str, conversation_history: str = ""):
         return "LangGraph coordinates agents through a compiled state graph [1]."
+
+    async def corrective_rag_review(self, user_message: str, documents: str):
+        if "LangGraph corrected overview" in documents:
+            return CorrectiveRAGReview(
+                decision="accept",
+                confidence=0.9,
+                grades=[
+                    {
+                        "label": "1",
+                        "verdict": "relevant",
+                        "relevance_score": 0.9,
+                        "reason": "The corrected result directly matches the query.",
+                    }
+                ],
+                feedback="Corrected retrieval is sufficient.",
+            )
+        if "Weak retrieval" in user_message:
+            return CorrectiveRAGReview(
+                decision="rewrite",
+                confidence=0.4,
+                rewritten_query="state graph agent orchestration",
+                grades=[
+                    {
+                        "label": "1",
+                        "verdict": "ambiguous",
+                        "relevance_score": 0.3,
+                        "reason": "The initial result is too broad.",
+                    }
+                ],
+                feedback="Rewrite the query for more precise retrieval.",
+            )
+        return CorrectiveRAGReview(
+            decision="accept",
+            confidence=0.9,
+            grades=[
+                {
+                    "label": "1",
+                    "verdict": "relevant",
+                    "relevance_score": 0.9,
+                    "reason": "The document directly answers the question.",
+                }
+            ],
+            feedback="Context is sufficient.",
+        )
 
     async def critic_review(self, user_message: str, draft_answer: str, sources: str = ""):
         return CriticReview(
@@ -149,6 +212,7 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         workflow.search_agent = SearchAgent(workflow.search_service)
         workflow.hybrid_retriever_agent = HybridRetrieverAgent()
         workflow.reranker_agent = RerankerAgent()
+        workflow.corrective_rag_agent = CorrectiveRAGAgent(workflow.llm_service)
         workflow.context_compression_agent = ContextCompressionAgent(workflow.llm_service)
         workflow.rag_agent = RAGAgent(workflow.llm_service)
         workflow.citation_validator_agent = CitationValidatorAgent(CitationValidatorTool())
@@ -173,6 +237,7 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
             SearchAgent(FakeSearchService()),
             HybridRetrieverAgent(),
             RerankerAgent(),
+            CorrectiveRAGAgent(),
             ContextCompressionAgent(FakeLLMService()),
             RAGAgent(FakeLLMService()),
             CitationValidatorAgent(CitationValidatorTool()),
@@ -200,6 +265,7 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.route, "rag")
         self.assertIn("search", response.agents_used)
         self.assertIn("reranker", response.agents_used)
+        self.assertIn("corrective_rag", response.agents_used)
         self.assertIn("rag", response.agents_used)
         self.assertIn("citation_validator", response.agents_used)
         self.assertIn("critic", response.agents_used)
@@ -209,6 +275,19 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.plan)
         self.assertTrue(response.retrieval_metrics)
         self.assertTrue(response.tool_results)
+
+    async def test_corrective_rag_can_rewrite_and_retry_retrieval(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message="Weak retrieval question about agents"))
+
+        self.assertEqual(response.route, "rag")
+        self.assertIn("corrective_rag", response.agents_used)
+        self.assertIn("retrieval_retry", response.agents_used)
+        self.assertIn("rag", response.agents_used)
+        self.assertEqual(
+            response.retrieval_metrics["corrective_rag"]["decision"],
+            "accept",
+        )
 
     async def test_calculation_uses_safe_tool_route(self):
         workflow = self.build_workflow()

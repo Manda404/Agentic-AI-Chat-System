@@ -47,13 +47,14 @@ class SearchAgent:
         3. produire une version texte lisible dans `state.search_output` ;
         4. exposer les métadonnées pour le frontend.
         """
-        logger.bind(route=state.route, message_preview=state.user_message[:120]).info(
+        retrieval_query = state.metadata.get("retrieval_query") or state.user_message
+        logger.bind(route=state.route, message_preview=retrieval_query[:120]).info(
             "Search agent started."
         )
 
         # Recherche full-text de premier niveau ; les agents suivants amélioreront le contexte.
         owner_id = state.metadata.get("user_id")
-        results = await self.search_service.search(state.user_message, owner_id=owner_id)
+        results = await self.search_service.search(retrieval_query, owner_id=owner_id)
 
         state.search_results = results
         lines = []
@@ -84,6 +85,7 @@ class SearchAgent:
                 "results_count": len(results),
                 "index_name" : self.search_service.index_name,
                 "document_scope": settings.document_scope_mode,
+                "retrieval_query": retrieval_query,
                 "documents": [
                     {
                         "document_id": item.document_id,

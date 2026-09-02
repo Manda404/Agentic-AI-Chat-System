@@ -21,7 +21,7 @@ from openai import AsyncOpenAI
 from app.prompts import LLMPrompts
 from app.config.settings import settings
 from app.logger import logger
-from app.models.chat_models import CriticReview, PlannerDecision, SafetyReview
+from app.models.chat_models import CorrectiveRAGReview, CriticReview, PlannerDecision, SafetyReview
 from pydantic import BaseModel, ValidationError
 
 if settings.langfuse_enabled:
@@ -303,6 +303,24 @@ class LLMService:
             temperature=0.0,
         )
         return self._parse_json_model(raw, CriticReview)
+
+    async def corrective_rag_review(
+        self,
+        user_message: str,
+        documents: str,
+    ) -> CorrectiveRAGReview:
+        """Évalue les documents récupérés et propose une correction de requête si nécessaire."""
+        prompt = LLMPrompts.corrective_rag_review(
+            user_message=user_message,
+            documents=documents,
+        )
+        raw = await self.generate(
+            prompt=prompt,
+            capability=ModelCapability.REASONING,
+            max_tokens=900,
+            temperature=0.0,
+        )
+        return self._parse_json_model(raw, CorrectiveRAGReview)
 
     async def safety_review(self, answer: str) -> SafetyReview:
         """Passe une réponse dans un garde-fou sécurité JSON."""

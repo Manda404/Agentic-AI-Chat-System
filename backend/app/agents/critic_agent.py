@@ -27,9 +27,22 @@ class CriticAgent:
         # Règles minimales : réponse existante, documents présents, sources visibles, longueur utile.
         if not candidate.strip():
             feedback.append("No draft answer was produced.")
-        if state.route in {"rag", "parallel"} and not state.search_results:
+        insufficient_evidence_answer = any(
+            marker in candidate.lower()
+            for marker in (
+                "could not find sufficiently relevant indexed documents",
+                "could not find relevant indexed documents",
+                "indexed documents do not contain",
+            )
+        )
+        if state.route in {"rag", "parallel"} and not state.search_results and not insufficient_evidence_answer:
             feedback.append("The route expects document grounding, but no document was found.")
-        if state.search_results and "Sources:" not in candidate and state.route in {"rag", "parallel"}:
+        if (
+            state.search_results
+            and "Sources:" not in candidate
+            and state.route in {"rag", "parallel"}
+            and not insufficient_evidence_answer
+        ):
             feedback.append("The grounded answer should keep visible sources.")
         if len(candidate.strip()) < 12:
             feedback.append("The draft answer is too short to be useful.")

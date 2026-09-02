@@ -14,6 +14,7 @@ from typing import Awaitable, Callable, Optional
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.context_compression_agent import ContextCompressionAgent
+from app.agents.corrective_rag_agent import CorrectiveRAGAgent
 from app.agents.citation_validator_agent import CitationValidatorAgent
 from app.agents.final_answer_agent import FinalAnswerAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
@@ -91,6 +92,10 @@ class ChatWorkflow:
         self.reranker_agent = RerankerAgent(
             max_results=settings.max_rag_documents,
             embedding_service=self.embedding_service if settings.semantic_reranker_enabled else None,
+        )
+        self.corrective_rag_agent = CorrectiveRAGAgent(
+            self.llm_service,
+            min_relevance=settings.corrective_rag_min_relevance,
         )
         self.context_compression_agent = ContextCompressionAgent(
             self.llm_service,
@@ -228,6 +233,8 @@ class ChatWorkflow:
         graph.add_node("search", self._agent_node("SearchAgent", self.search_agent.run, swallow_errors=True))
         graph.add_node("hybrid_retriever", self._agent_node("HybridRetrieverAgent", self.hybrid_retriever_agent.run, swallow_errors=True))
         graph.add_node("reranker", self._agent_node("RerankerAgent", self.reranker_agent.run, swallow_errors=True))
+        graph.add_node("corrective_rag", self._agent_node("CorrectiveRAGAgent", self.corrective_rag_agent.run, swallow_errors=True))
+        graph.add_node("prepare_retrieval_retry", self._prepare_retrieval_retry_node)
         graph.add_node("context_compression", self._agent_node("ContextCompressionAgent", self.context_compression_agent.run, swallow_errors=True))
         graph.add_node("summary", self._agent_node("SummaryAgent", self.summary_agent.run, swallow_errors=True))
         graph.add_node("rag", self._agent_node("RAGAgent", self.rag_agent.run, swallow_errors=True))
@@ -266,7 +273,24 @@ class ChatWorkflow:
         )
         graph.add_edge("search", "hybrid_retriever")
         graph.add_edge("hybrid_retriever", "reranker")
-        graph.add_edge("reranker", "context_compression")
+        graph.add_conditional_edges(
+            "reranker",
+            self._route_after_reranker,
+            {
+                "corrective_rag": "corrective_rag",
+                "context_compression": "context_compression",
+            },
+        )
+        graph.add_conditional_edges(
+            "corrective_rag",
+            self._route_after_corrective_rag,
+            {
+                "search": "prepare_retrieval_retry",
+                "context_compression": "context_compression",
+                "critic": "critic",
+            },
+        )
+        graph.add_edge("prepare_retrieval_retry", "search")
         graph.add_conditional_edges(
             "context_compression",
             self._route_after_retrieval,
@@ -371,6 +395,25 @@ class ChatWorkflow:
             return state.to_dict()
 
         return node
+
+    async def _prepare_retrieval_retry_node(self, payload: GraphStateDict) -> GraphStateDict:
+        state = GraphState.from_mapping(payload)
+        state.retrieval_correction_attempted = True
+        state.search_results = []
+        state.reranked_results = []
+        state.compressed_context = None
+        state.search_output = None
+        state.rag_output = None
+        state.draft_answer = None
+        state.record_result(
+            AgentResult(
+                agent="retrieval_retry",
+                output="Corrective RAG requested a second retrieval pass with a rewritten query.",
+                metadata={"retrieval_query": state.metadata.get("retrieval_query")},
+            )
+        )
+        state.evaluation.setdefault("latency_ms", {})["prepare_retrieval_retry"] = 0.0
+        return state.to_dict()
 
     def _prepare_retry_node(self, target: str) -> Callable[[GraphStateDict], Awaitable[GraphStateDict]]:
         async def node(payload: GraphStateDict) -> GraphStateDict:
@@ -483,6 +526,19 @@ class ChatWorkflow:
             return "critic"
         return "rag"
 
+    def _route_after_reranker(self, payload: GraphStateDict) -> str:
+        if settings.corrective_rag_enabled:
+            return "corrective_rag"
+        return "context_compression"
+
+    def _route_after_corrective_rag(self, payload: GraphStateDict) -> str:
+        corrective = payload.get("retrieval_metrics", {}).get("corrective_rag", {})
+        if corrective.get("decision") == "rewrite":
+            return "search"
+        if corrective.get("decision") in {"insufficient_evidence", "fallback"}:
+            return "critic"
+        return "context_compression"
+
     def _route_to_critic(self, payload: GraphStateDict) -> str:
         if self._requires_critic(payload):
             return "critic"
@@ -538,6 +594,8 @@ class ChatWorkflow:
         elif node_name == "RerankerAgent":
             state.reranked_results = state.search_results
             state.retrieval_metrics["reranker_error"] = str(exc)
+        elif node_name == "CorrectiveRAGAgent":
+            state.retrieval_metrics["corrective_rag_error"] = str(exc)
         elif node_name == "ContextCompressionAgent":
             state.compressed_context = state.search_output
             state.retrieval_metrics["compression_error"] = str(exc)

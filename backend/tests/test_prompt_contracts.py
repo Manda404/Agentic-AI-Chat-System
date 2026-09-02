@@ -10,16 +10,17 @@ class PromptContractTests(unittest.TestCase):
         expected = {
             "summarization", "code_generation", "question_answering", "reasoning",
             "chat_summary", "grounded_answer", "planner", "critic_review",
-            "safety_review", "compress_context", "rerank",
+            "corrective_rag_review", "safety_review", "compress_context", "rerank",
         }
         self.assertEqual(set(LLMPrompts.get_all_templates()), expected)
 
     def test_structured_prompts_require_json_only(self):
         planner = LLMPrompts.planner("question", "history")
         critic = LLMPrompts.critic_review("question", "answer", "sources")
+        corrective_rag = LLMPrompts.corrective_rag_review("question", "[1] evidence")
         safety = LLMPrompts.safety_review("answer")
 
-        for prompt in (planner, critic, safety):
+        for prompt in (planner, critic, corrective_rag, safety):
             self.assertIn("valid JSON", prompt)
             self.assertIn("text outside", prompt.lower())
 

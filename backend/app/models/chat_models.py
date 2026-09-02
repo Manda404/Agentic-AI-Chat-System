@@ -82,6 +82,25 @@ class CriticReview(BaseModel):
     feedback: str = "No critic review available."
 
 
+class CorrectiveRAGDocumentGrade(BaseModel):
+    """Évaluation CRAG d'un document candidat avant génération."""
+
+    label: str
+    verdict: Literal["relevant", "ambiguous", "irrelevant"] = "irrelevant"
+    relevance_score: float = 0.0
+    reason: str = "No relevance evidence found."
+
+
+class CorrectiveRAGReview(BaseModel):
+    """Décision CRAG structurée sur le contexte récupéré."""
+
+    decision: Literal["accept", "rewrite", "fallback"] = "fallback"
+    confidence: float = 0.0
+    rewritten_query: Optional[str] = None
+    grades: List[CorrectiveRAGDocumentGrade] = Field(default_factory=list)
+    feedback: str = "No corrective retrieval review available."
+
+
 class SafetyReview(BaseModel):
     """Résultat du garde-fou de sécurité appliqué à la réponse finale candidate."""
 

@@ -46,6 +46,7 @@ class GraphStateDict(TypedDict, total=False):
     evaluation: Dict[str, Any]
     error: Optional[str]
     correction_attempted: bool
+    retrieval_correction_attempted: bool
     metadata: Dict[str, Any]
 
 
@@ -83,6 +84,7 @@ class GraphState:
     evaluation: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     correction_attempted: bool = False
+    retrieval_correction_attempted: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod

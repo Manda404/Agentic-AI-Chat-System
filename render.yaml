@@ -58,6 +58,10 @@ services:
         value: HS256
       - key: AUTH_TOKEN_EXPIRY_MINUTES
         value: "120"
+      - key: CORRECTIVE_RAG_ENABLED
+        value: "true"
+      - key: CORRECTIVE_RAG_MIN_RELEVANCE
+        value: "0.2"
       - key: LANGFUSE_ENABLED
         value: "false"
       - key: LOG_LEVEL
