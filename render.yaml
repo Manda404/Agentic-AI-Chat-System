@@ -46,6 +46,12 @@ services:
         sync: false
       - key: REDIS_TTL_SECONDS
         value: "3600"
+      - key: ADMIN_EMAILS
+        value: rostand@yahoo.fr
+      - key: RESET_REQUIRES_ADMIN
+        value: "true"
+      - key: BATCH_INGEST_REQUIRES_ADMIN
+        value: "true"
       - key: AUTH_SECRET_KEY
         sync: false
       - key: AUTH_ALGORITHM
