@@ -1,22 +1,20 @@
-# Fonctionnement pas à pas
+# Step-by-step operation
 
-Le parcours courant utilise Hugging Face et quatre agents : planification → recherche → synthèse → vérification, puis contrôles locaux. Le chercheur fournit preuves et brouillon ; le synthétiseur peut s’abstenir, et le vérificateur peut refuser la publication. Budget global avec une correction maximum : 13 appels LLM et 90 secondes par défaut. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
+The current architecture uses four collaborating Hugging Face agents and three read-only search/passage tools. The team is limited to one correction, thirteen LLM calls and a default 90-second overall timeout.
 
-Architecture courante du 10 septembre 2026 : quatre agents documentaires et trois outils de recherche/lecture.
+1. On startup, `ApplicationServices` builds memory, search, embedding, generation and authentication services, then compiles the outer graph and team subgraph.
+2. An authenticated user imports PDF/CSV files. The backend extracts text, chunks it, adds ownership/visibility, prepares embeddings and writes MongoDB fragments. Vector failures are reported; textless PDFs are rejected.
+3. For a question, the backend loads existing owner-scoped history before storing the current message. There is no answer cache or parallel conversation checkpoint.
+4. The local router honors `documents`, `general` and `auto`. Automatic mode prioritizes documentary research except for greetings, standalone calculations, explicit inventory requests and supplied-text transformations. `general` bypasses retrieval; `documents` blocks web search.
+5. The planner defines an objective and subquestions. The researcher chooses its tools. Document search runs text and vector retrieval in parallel, with the same query and access scope, then applies RRF, reranking and compression. Tavily provides optional public web evidence. Passage reads recheck current permissions.
+6. The researcher sends evidence and a draft to the synthesizer. The synthesizer writes a cited answer, requests specific missing evidence or abstains. The verifier approves, rejects, requests additional research or requests a writing correction. Only one return is allowed for the whole team; a second request causes abstention.
+7. Local checks validate the draft, required tools and citations. An existing citation does not prove that its associated claim is true. The verdict explicitly retains this limitation.
+8. The finalizer publishes the validated answer, clarification or abstention; the secret filter checks the final text. The API returns the answer and diagnostics, and conversation history stores the completed turn.
 
-1. Au démarrage, `ApplicationServices` construit les services de mémoire, recherche, embeddings, génération et authentification, puis compile le graphe à cinq étapes.
-2. L'utilisateur s'authentifie et importe des fichiers PDF/CSV. Le backend extrait le texte, le découpe, ajoute la propriété/visibilité, génère les embeddings et écrit les fragments dans MongoDB. Les échecs vectoriels sont annoncés ; les PDF sans texte sont refusés.
-3. À la réception d'une question, le backend charge l'historique existant avant d'enregistrer le message courant. L'historique est isolé par propriétaire ; il n'existe ni cache de réponse ni checkpoint conversationnel parallèle.
-4. Le routeur respecte le mode : `documents` impose la recherche ; `general` autorise une réponse non documentaire ; `auto` privilégie les documents sauf salutation, calcul autonome, inventaire explicite ou transformation de texte fourni.
-5. Pour une question documentaire, l’agent choisit ses actions sous budget. `rechercher` appelle le pipeline full-text/vectoriel, fusion RRF, reranking et compression. Une seconde recherche permet une reformulation. `lire_passage` relit un fragment déjà découvert, en revérifiant ses permissions.
-6. L’agent reçoit les observations et extraits, puis décide de répondre avec des labels `[n]`, de demander une précision ou de s’abstenir. Il dispose au maximum de deux recherches, trois outils et quatre appels LLM par passe de recherche ; une seule correction est autorisée, pour treize appels LLM maximum au total. Une réponse documentaire sans extrait est bloquée. Les chemins de salutation, calcul et inventaire restent sans génération.
-7. Les contrôles locaux vérifient le brouillon, les succès des outils et les citations. Une citation existante ne suffit pas à démontrer la vérité d'une affirmation ; la validation expose explicitement cette limite.
-8. Le système publie la réponse validée ou un message d'abstention. Le filtre de secrets s'applique au texte final. La réponse et les traces sont retournées, puis l'historique contient le tour complet.
+Greetings, calculations and inventory requests require no LLM generation. `SummaryAgent` handles direct answers and transformations; `RAGAgent` is retained for the simple `baseline` evaluation strategy.
 
-La boucle outil → observation → décision se trouve dans le nœud `documentary`. Une synthèse et une revue LLM indépendantes suivent la recherche. Le synthétiseur et le vérificateur peuvent demander une seule correction ciblée ; un échec du validateur local ne relance pas la génération. Les métriques `evaluation.documentary_agent`, `evaluation.latency_ms`, `evaluation.component_latency_ms`, `retrieval_metrics` et `evaluation.answer` permettent de localiser les problèmes.
+The research loop runs inside the team's `researcher` node. The `documentary` outer node contains the team subgraph. Local citation failure does not trigger another generation loop.
 
-Le statut distingue réponse, demande de précision et abstention. Le parcours déterministe précédent est conservé avec `strategy="baseline"` pour comparaison. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) pour les contrats et limites.
+Diagnostics include `evaluation.collaboration`, `evaluation.documentary_team`, `evaluation.documentary_agent`, `evaluation.latency_ms`, `evaluation.component_latency_ms`, `retrieval_metrics` and `evaluation.answer`. The frontend displays agent exchanges after the response, not as a live stream.
 
-La recherche web optionnelle `rechercher_web` utilise Tavily en mode automatique avec `TAVILY_API_KEY`. Elle partage le budget de deux recherches par passe (quatre maximum avec correction) avec la recherche documentaire. Les URL rejoignent les sources de synthèse et de vérification ; les tests couvrent les pannes, l’absence de clé, le budget partagé et le blocage en mode documents. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md#recherche-internet-avec-tavily).
-
-La collaboration utilise un sous-graphe LangGraph à quatre nœuds, avec retours conditionnels vers le chercheur ou le synthétiseur. Les échanges sont affichés dans le frontend via `evaluation.collaboration`. Le nouveau planificateur est `PlanningAgent` ; les classes historiques du dossier expérimental restent hors ligne.
+See [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) for contracts, [RAG_SYSTEM.md](RAG_SYSTEM.md) for parallel retrieval, and [EVALUATION.md](EVALUATION.md) for verification limits.

@@ -1,4 +1,4 @@
-"""Middleware de limitation de débit par IP, Redis si disponible, mémoire sinon."""
+"""Per-IP rate limiting using Redis when available, with a local-memory fallback."""
 
 import hashlib
 import time
@@ -13,7 +13,7 @@ from app.logger import logger
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Limite les requêtes par IP avec un compteur Redis partagé et un fallback local."""
+    """Enforce per-IP request limits with a shared Redis counter and local fallback."""
 
     def __init__(self, app, requests_per_minute: int = 60):
         super().__init__(app)
@@ -23,7 +23,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.last_cleanup = time.time()
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Compte les requêtes par IP sur une fenêtre glissante de 60s et bloque au-delà de la limite."""
+        """Count requests in a 60-second window and reject requests above the limit."""
         client_ip = request.client.host if request.client else "unknown"
         
         if request.url.path == "/health":
@@ -99,7 +99,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip: str,
         current_time: float,
     ) -> int | None:
-        """Incrémente un compteur partagé Redis si le service applicatif est disponible."""
+        """Increment the shared Redis counter when application services are available."""
         services = getattr(request.app.state, "services", None)
         memory_service = getattr(services, "memory", None)
         if memory_service is None or not getattr(memory_service, "using_redis", False):
@@ -115,7 +115,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return None
 
     def _cleanup_old_entries(self, current_time: float):
-        """Supprime les compteurs des IP inactives depuis plus de 5 minutes (évite une fuite mémoire)."""
+        """Remove counters for IPs inactive for more than five minutes to bound memory usage."""
         cutoff_time = current_time - 300  # 5 minutes
         ips_to_remove = []
         

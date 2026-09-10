@@ -1,4 +1,4 @@
-"""Deux outils en lecture seule. Le scope d'accès est injecté par le serveur."""
+"""Read-only document and web tools; access scope is supplied by the server."""
 from app.state import GraphState
 from app.services.tavily_service import TavilyService
 
@@ -10,7 +10,7 @@ class DocumentaryTools:
         self.search_service = search_service
 
     async def rechercher(self, query: str, owner_id: str | None, conversation_id: str):
-        # Un état neuf à chaque recherche évite de conserver les erreurs/sélections précédentes.
+        # Fresh state per search avoids carrying over previous errors or selections.
         state = GraphState(conversation_id=conversation_id, user_message=query,
                            metadata={'user_id': owner_id, 'retrieval_query': query})
         await self.retrieval.run(state)
@@ -26,7 +26,7 @@ class DocumentaryTools:
     async def lire_passage(self, passage_id: str, owner_id: str | None, allowed_ids: set[str]):
         if passage_id not in allowed_ids:
             raise ValueError('passage_not_discovered')
-        # Nouvelle lecture filtrée : les permissions peuvent avoir changé depuis la recherche.
+        # Reapply access filters: permissions may have changed since retrieval.
         document = await self.search_service.get_passage(passage_id, owner_id=owner_id)
         if document is None:
             raise PermissionError('passage_unavailable')

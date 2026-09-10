@@ -1,12 +1,4 @@
-"""
-Dépendance FastAPI qui protège les routes nécessitant un utilisateur
-authentifié : `Depends(get_current_user)`.
-
-Lit l'en-tête `Authorization: Bearer <jwt>`, décode/valide le token,
-puis vérifie que l'utilisateur existe toujours dans Redis. Toute
-défaillance (en-tête absent, token invalide/expiré, utilisateur
-introuvable) se traduit par une `HTTPException(401)`.
-"""
+"""JWT-protected FastAPI dependency: Depends(get_current_user). Read the Authorization bearer token, validate it and resolve the authenticated account."""
 
 from fastapi import Header, HTTPException
 
@@ -25,7 +17,7 @@ async def get_current_user(
     authorization: str = Header(default=""),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> UserResponse:
-    """Valide le header `Authorization: Bearer <token>` et retourne l'utilisateur courant."""
+    """Validate Authorization: Bearer <token> and return the current user."""
     if not authorization.startswith("Bearer "):
         logger.bind(authorization_header_present=bool(authorization)).warning(
             "Rejected request: missing or malformed Authorization header."

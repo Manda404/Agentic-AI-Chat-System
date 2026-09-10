@@ -1,4 +1,4 @@
-"""Actions fermées de l'agent : aucune commande ou fonction arbitraire."""
+"""Closed action schema: no arbitrary commands or function dispatch."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 

@@ -1,8 +1,4 @@
-"""Graphe borné avec équipe de recherche, synthèse et vérification.
-
-Redis conserve la conversation. LangGraph représente le parcours ; aucune
-boucle n'est ouverte hors de l'agent documentaire et de ses budgets.
-"""
+"""Bounded chat graph with a collaborative documentary team and direct routes. Redis holds conversation history; LangGraph controls execution and correction budgets."""
 import time
 import uuid
 from typing import Optional
@@ -34,7 +30,7 @@ from app.workflows.routing import route_request
 
 
 class ChatWorkflow:
-    """Une équipe documentaire bornée et deux parcours de référence pour l’évaluation."""
+    """A bounded documentary team with two reference strategies for evaluation."""
 
     def __init__(self, memory_service=None, search_service=None, llm_service=None, embedding_service=None, strategy="multi_agent"):
         if strategy not in {"multi_agent", "agent", "baseline"}:
@@ -96,7 +92,7 @@ class ChatWorkflow:
 
     async def _answer(self, state):
         if state.route == 'greeting':
-            state.draft_answer = 'Bonjour ! Je peux rechercher dans vos documents et répondre avec des sources, ou effectuer un calcul.'
+            state.draft_answer = 'Hello! I can search your documents and answer with sources, or perform a calculation.'
             result = AgentResult(agent='greeting', output=state.draft_answer)
         elif state.route in {'calculation', 'document_list'}:
             result = await self.tool_executor.run(state)
@@ -124,7 +120,7 @@ class ChatWorkflow:
 
     async def _finalize(self, state):
         state.record_result(await self.finalizer.run(state))
-        # Le texte effectivement publié passe toujours par le filtre local.
+        # Always apply the local filter to the text that will be published.
         state.record_result(await self.safety_guard.run(state))
 
     async def run(self, request: ChatRequest, user_id: Optional[str] = None) -> ChatResponse:
@@ -135,7 +131,7 @@ class ChatWorkflow:
                 return ChatResponse(conversation_id=conversation_id, route='safety',
                                     answer=f'Message too long (maximum {settings.max_user_message_chars} characters).',
                                     agents_used=['safety'], agent_results=[], safety_passed=False)
-            # Charger avant append évite de répéter le message courant dans le contexte.
+            # Load before append to avoid repeating the current message in context.
             stored = await self.memory_service.get_messages(conversation_id, owner_id=user_id)
             context = [item.model_dump() for item in request.history] if request.history else list(stored)
             state = GraphState(conversation_id=conversation_id, user_message=request.message,
@@ -145,7 +141,7 @@ class ChatWorkflow:
                                            'llm_calls': 0, 'llm_call_budget': {'multi_agent': DocumentaryTeam.MAX_LLM_CALLS, 'agent': 4, 'baseline': 1}[self.strategy]})
             await self.memory_service.append_message(conversation_id, 'user', request.message, owner_id=user_id)
             state = GraphState.from_mapping(await self.graph.ainvoke(state.to_dict()))
-            answer = state.final_answer or 'Je ne peux pas produire une réponse fiable pour cette demande.'
+            answer = state.final_answer or 'I cannot produce a reliable answer to this request.'
             await self.memory_service.append_message(conversation_id, 'assistant', answer, owner_id=user_id)
             return ChatResponse(
                 conversation_id=conversation_id, route=state.route or 'rag', answer=answer,

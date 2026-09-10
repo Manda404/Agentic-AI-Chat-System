@@ -1,16 +1,4 @@
-"""
-Middleware HTTP qui logue chaque requête entrante et sa réponse.
-
-Rôle : donner un identifiant unique (`request_id`) à chaque requête HTTP,
-mesurer sa durée, et logger un événement "Incoming request" à l'entrée
-puis "Request completed" (ou "Request failed" en cas d'exception) à la
-sortie. C'est la première trace visible dans les logs pour n'importe
-quel appel au backend, ce qui permet de savoir rapidement si une requête
-est arrivée, combien de temps elle a pris, et si elle a échoué.
-
-Le `request_id` est aussi renvoyé au client via l'en-tête `X-Request-ID`,
-utile pour corréler un ticket de support avec une ligne de log précise.
-"""
+"""Log incoming HTTP requests and outgoing responses with a unique request_id and duration. Record Incoming request, Request completed or Request failed. Return X-Request-ID so clients can correlate failures with logs."""
 
 import time
 import uuid
@@ -29,7 +17,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Génère un request_id, logue entrée/sortie et le temps d'exécution."""
+        """Create a request ID and log request entry, completion and duration."""
         request_id = str(uuid.uuid4())
 
         request.state.request_id = request_id

@@ -6,8 +6,8 @@ export const metadata: Metadata = {
   description: "Agentic RAG chat UI with multi-agent workflow visibility",
 };
 
-// Applique le thème sauvegardé (ou la préférence système) AVANT le premier
-// rendu pour éviter un flash de mauvais thème (FOUC) au chargement.
+// Apply the saved theme or system preference before the first render
+// to prevent a flash of the wrong theme on page load.
 const themeInitScript = `
 (function () {
   try {

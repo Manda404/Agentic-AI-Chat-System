@@ -1,4 +1,4 @@
-"""Tests de l'autonomie bornée et des outils, sans appels aux fournisseurs."""
+"""Bounded autonomy and tool tests without provider calls."""
 import asyncio
 import json
 from types import SimpleNamespace

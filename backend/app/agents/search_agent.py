@@ -1,12 +1,4 @@
-"""
-Agent de recherche documentaire MongoDB Atlas (full-text, Atlas Search).
-
-Prend le message utilisateur brut, le passe tel quel à `SearchService.search`,
-puis met en forme les résultats (titre, fichier, page, extrait) en un
-texte lisible stocké dans `state.search_output`. Les résultats structurés
-restent aussi disponibles dans `state.search_results` pour être réutilisés
-par les agents suivants : retrieval hybride, reranking, compression et RAG.
-"""
+"""MongoDB Atlas text retrieval. Send the current retrieval query to SearchService.search, retain structured hits in state.search_results and render source metadata into state.search_output for downstream retrieval and diagnostics."""
 
 from app.config.settings import settings
 from app.logger import logger
@@ -30,36 +22,28 @@ else:
 
 
 class SearchAgent:
-    """Cherche des documents pertinents dans MongoDB Atlas pour le message courant."""
+    """Find relevant MongoDB Atlas documents for the current query."""
 
     def __init__(self,search_service:SearchService):
-        """Injecte le service MongoDB Atlas réutilisé par l'agent."""
+        """Inject the shared MongoDB Atlas search service."""
         self.search_service = search_service
 
     @observe(name="search_agent")
     async def run(self, state:GraphState) -> AgentResult:
-        """
-        Exécute la recherche MongoDB Atlas et remplit l'état partagé.
-
-        Étapes :
-        1. appeler `SearchService.search` ;
-        2. garder les résultats structurés dans `state.search_results` ;
-        3. produire une version texte lisible dans `state.search_output` ;
-        4. exposer les métadonnées pour le frontend.
-        """
+        """Run SearchService.search, store structured hits, render title/file/page/excerpts and expose result metadata."""
         retrieval_query = state.metadata.get("retrieval_query") or state.user_message
         logger.bind(route=state.route, message_preview=retrieval_query[:120]).info(
             "Search agent started."
         )
 
-        # Recherche full-text de premier niveau ; les agents suivants amélioreront le contexte.
+        # Initial text retrieval; downstream components refine the context.
         owner_id = state.metadata.get("user_id")
         results = await self.search_service.search(retrieval_query, owner_id=owner_id)
 
         state.search_results = results
         lines = []
         for index, item in enumerate(results):
-            # Construire une ligne lisible avec fichier/page quand ces métadonnées existent.
+            # Render a readable line with file/page metadata when available.
             location_parts = []
             if item.file_name:
                 location_parts.append(item.file_name)

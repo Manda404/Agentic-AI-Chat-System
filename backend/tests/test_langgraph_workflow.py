@@ -1,4 +1,4 @@
-"""Contrats du parcours RAG borné, sans MongoDB, Redis ou appel fournisseur."""
+"""Bounded RAG workflow contracts without MongoDB, Redis or provider calls."""
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -78,6 +78,13 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Sources:', response.answer)
         self.assertIn('citation_validator', response.agents_used)
 
+    async def test_english_inventory_suggestion_uses_direct_tool(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message='Which documents are indexed?'), user_id='alice')
+        self.assertEqual(response.route, 'document_list')
+        self.assertIn('Indexed documents', response.answer)
+        workflow.llm_service.grounded_answer.assert_not_awaited()
+
     async def test_greeting_without_network_generation(self):
         workflow = self.build_workflow()
         response = await workflow.run(ChatRequest(message='Bonjour !'))
@@ -98,7 +105,7 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_calculation_is_not_success(self):
         response = await self.build_workflow().run(ChatRequest(message='Calcule 2 / 0'))
         self.assertFalse(response.critic_passed)
-        self.assertIn('Calcul impossible', response.answer)
+        self.assertIn('Calculation failed', response.answer)
         self.assertEqual(response.evaluation['answer']['status'], 'abstained')
 
     async def test_inventory_uses_tool(self):
@@ -223,5 +230,5 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         workflow.retrieval.hybrid = HybridRetrieverAgent(SimpleNamespace(similarity_search=AsyncMock(side_effect=RuntimeError('vector down'))))
         response = await workflow.run(ChatRequest(message='Question documentaire'))
         self.assertEqual(response.evaluation['answer']['reason'], 'retrieval_unavailable')
-        self.assertIn('recherche documentaire est indisponible', response.answer)
+        self.assertIn('Document search is unavailable', response.answer)
         workflow.llm_service.grounded_answer.assert_not_awaited()

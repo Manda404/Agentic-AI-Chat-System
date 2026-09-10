@@ -1,4 +1,4 @@
-"""Dépendances FastAPI donnant accès au conteneur initialisé au démarrage."""
+"""FastAPI dependencies exposing the application container initialized at startup."""
 
 from fastapi import Request
 

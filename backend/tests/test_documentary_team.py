@@ -91,7 +91,7 @@ class TeamTests(unittest.IsolatedAsyncioTestCase):
         correction_input = w.llm_service.documentary_step.call_args_list[2].kwargs
         self.assertIn('conditions', str(correction_input['observations']))
         w.documentary_agent.tools.lire_passage.assert_awaited_once_with('p1', owner_id='alice', allowed_ids={'p1'})
-        self.assertTrue(any(e['from'] == 'Vérificateur' and e['to'] == 'Chercheur' for e in r.evaluation['collaboration']))
+        self.assertTrue(any(e['from'] == 'Verifier' and e['to'] == 'Researcher' for e in r.evaluation['collaboration']))
 
     async def test_revision_reuses_evidence_without_new_research(self):
         w = self.workflow([{'answerable': True, 'text': 'Cinq jours [1].'},
@@ -110,7 +110,7 @@ class TeamTests(unittest.IsolatedAsyncioTestCase):
             action('lire_passage', passage_id='p1'), action('answer', text='Accord écrit [1].')]
         r = await w.run(ChatRequest(message='Quelles conditions ?', mode='documents'))
         self.assertTrue(r.critic_passed)
-        self.assertTrue(any(e['from'] == 'Synthétiseur' and e['to'] == 'Chercheur' for e in r.evaluation['collaboration']))
+        self.assertTrue(any(e['from'] == 'Synthesizer' and e['to'] == 'Researcher' for e in r.evaluation['collaboration']))
 
     async def test_second_correction_is_blocked_at_thirteen_calls(self):
         w = self.workflow([{'answerable': True, 'text': 'Deux jours [1].'},

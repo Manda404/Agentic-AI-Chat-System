@@ -1,4 +1,1 @@
-"""
-Lecture de fichiers sources (CSV, PDF) et conversion en documents
-prêts à être indexés dans MongoDB Atlas.
-"""
+"""Read PDF/CSV sources into records for MongoDB Atlas indexing."""

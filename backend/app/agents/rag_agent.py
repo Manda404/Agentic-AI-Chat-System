@@ -1,11 +1,4 @@
-"""
-Agent RAG : génération de réponse ancrée dans les documents.
-
-Le RAGAgent est appelé après la recherche, le retrieval hybride, le reranking
-et la compression de contexte. Son rôle est de demander au LLM une réponse qui
-s'appuie sur les documents disponibles, puis d'ajouter les sources visibles
-pour le frontend et pour le critic.
-"""
+"""Grounded generation for the baseline RAG workflow after retrieval, reranking and compression. Add source metadata to the generated answer; local validation controls publication."""
 
 from app.logger import logger
 from app.models.chat_models import AgentResult
@@ -14,26 +7,17 @@ from app.state import GraphState
 
 
 class RAGAgent:
-    """Produit une réponse documentée à partir des résultats récupérés."""
+    """Generate a documented answer from retrieved results."""
 
     def __init__(self, llm_service: LLMService):
-        """Injecte le service LLM utilisé pour générer la réponse groundée."""
+        """Inject the LLM service used for grounded generation."""
         self.llm_service = llm_service
 
     async def run(self, state: GraphState) -> AgentResult:
-        """
-        Génère une réponse RAG et met à jour `rag_output` / `draft_answer`.
-
-        Étapes :
-        1. choisir les documents rerankés si disponibles ;
-        2. construire le contexte documentaire ;
-        3. appeler `LLMService.grounded_answer` ;
-        4. ajouter les sources ;
-        5. fournir un fallback clair si aucun document ou si le LLM échoue.
-        """
+        """Select retained documents, build evidence context, generate an answer and attach sources. Populate rag_output and draft_answer; report unavailable generation or missing evidence explicitly."""
         documents = state.selected_documents
         if not documents:
-            # Ne pas halluciner : sans document, on annonce explicitement la limite.
+            # Report missing evidence explicitly instead of fabricating an answer.
             fallback = (
                 "I could not find relevant indexed documents for this question. "
                 "Please ingest documents or rephrase the request."
@@ -47,12 +31,12 @@ class RAGAgent:
                 metadata={"grounded": False, "reason": "no_documents"},
             )
 
-        # L'historique est fourni comme contexte secondaire, jamais comme source documentaire.
+        # History is secondary context, never documentary evidence.
         conversation_history = "\n".join(
             f"{message.get('role', 'unknown')}: {message.get('content', '')}"
             for message in state.conversation_context
         )
-        # Le contexte compressé est prioritaire pour maîtriser la taille du prompt.
+        # Prefer compressed context to bound the prompt size.
         retrieved_documents = state.compressed_context or self._format_retrieved_documents(documents)
 
         if state.correction_attempted and state.critic_feedback:
@@ -62,7 +46,7 @@ class RAGAgent:
             )
 
         try:
-            # Chemin nominal : le LLM répond uniquement depuis le contexte récupéré.
+            # The LLM must answer only from the retrieved context.
             answer = await self.llm_service.grounded_answer(
                 question=state.user_message,
                 retrieved_documents=retrieved_documents,
@@ -79,9 +63,9 @@ class RAGAgent:
             logger.bind(conversation_id=state.conversation_id, reason=str(exc)).exception(
                 "RAG generation failed; falling back to search output."
             )
-            # En cas de panne LLM, on préfère exposer le résultat documentaire plutôt que planter.
+            # On provider failure, retain retrieval diagnostics instead of crashing.
             state.rag_output = self._append_sources(
-                "La génération est indisponible. Voici les extraits retrouvés :\n\n" + retrieved_documents,
+                "Generation is unavailable. Here are the retrieved excerpts:\n\n" + retrieved_documents,
                 state,
             )
             state.draft_answer = state.rag_output
@@ -96,7 +80,7 @@ class RAGAgent:
         return AgentResult(agent="rag", output=state.rag_output or "", metadata=metadata)
 
     def _format_retrieved_documents(self, documents) -> str:
-        """Transforme les documents structurés en contexte textuel lisible par le LLM."""
+        """Format retrieved passages with numbered labels and source metadata."""
         lines = []
         for index, item in enumerate(documents, start=1):
             location = []
@@ -114,7 +98,7 @@ class RAGAgent:
         return "\n\n".join(lines)
 
     def _append_sources(self, answer: str, state: GraphState) -> str:
-        """Ajoute une section `Sources` à partir des meilleurs documents disponibles."""
+        """Append the selected documents as numbered sources to the answer."""
         source_lines = []
         for index, item in enumerate(state.selected_documents, start=1):
             source = f"- [{index}] {item.title}"

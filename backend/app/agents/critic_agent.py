@@ -1,4 +1,4 @@
-"""Validation locale de contrat ; aucun score de factualité n'est inventé."""
+"""Local output-contract validation; no factuality score is fabricated."""
 from app.models.chat_models import AgentResult
 from app.state import GraphState
 

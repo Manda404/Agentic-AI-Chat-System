@@ -1,21 +1,4 @@
-"""
-Routes d'ingestion de documents dans MongoDB Atlas.
-
-Trois façons d'indexer des documents :
-- `POST /ingest/sample-data` : indexe le CSV d'exemple fourni avec le projet.
-- `POST /ingest/upload` : upload d'un fichier unique (PDF ou CSV) depuis le frontend.
-- `POST /ingest/batch` : parcourt un dossier serveur et indexe tous les PDF/CSV trouvés.
-
-Chaque document reçoit aussi un embedding (calculé via `HuggingFaceEmbeddingService`,
-le même service que celui utilisé pour le reranking sémantique) avant d'être inséré,
-afin d'alimenter à la fois l'index Atlas Search (full-text) et l'index Atlas Vector
-Search (sémantique) sur la même collection.
-
-L'ingestion ajoute aussi `owner_id`/`visibility`, des IDs stables et des limites
-de taille pour réduire les doublons et les risques d'abus.
-
-Toutes ces routes nécessitent un utilisateur authentifié.
-"""
+"""Authenticated MongoDB ingestion routes: sample-data indexes the bundled CSV, upload accepts one PDF/CSV, and batch scans a server directory. Shared preprocessing adds access metadata, stable IDs, size limits and embeddings for text/vector search. Embedding failures leave an explicitly reported text-only ingestion mode."""
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 import asyncio
@@ -52,12 +35,12 @@ UPLOAD_DIRECTORY = BACKEND_ROOT / "data"
 
 
 def _is_admin(user: UserResponse) -> bool:
-    """Vérifie si l'utilisateur courant est autorisé pour les opérations globales."""
+    """Check whether the current user may perform global operations."""
     return user.email.lower() in settings.admin_emails
 
 
 def _require_admin_if_enabled(user: UserResponse, enabled: bool, operation: str) -> None:
-    """Bloque les opérations dangereuses en production sans casser le mode local."""
+    """Enforce configured administrator access while preserving local development behavior."""
     if enabled and not _is_admin(user):
         raise HTTPException(
             status_code=403,
@@ -66,7 +49,7 @@ def _require_admin_if_enabled(user: UserResponse, enabled: bool, operation: str)
 
 
 def _batch_root() -> Path:
-    """Racine serveur autorisée pour l'ingestion batch."""
+    """Return the server root allowed for batch ingestion."""
     root = Path(settings.batch_ingest_root)
     if not root.is_absolute():
         root = BACKEND_ROOT / root
@@ -74,7 +57,7 @@ def _batch_root() -> Path:
 
 
 def _resolve_batch_directory(directory_path: str) -> Path:
-    """Normalise le dossier batch et interdit de sortir de la racine configurée."""
+    """Normalize the batch directory and prevent traversal outside the configured root."""
     requested = Path(directory_path or settings.batch_ingest_root)
     if not requested.is_absolute():
         requested = BACKEND_ROOT / requested
@@ -89,14 +72,14 @@ def _resolve_batch_directory(directory_path: str) -> Path:
 
 
 def _available_upload_path(filename: str) -> Path:
-    """Construit un chemin sûr sans écraser un document déjà enregistré."""
+    """Build a safe upload path without overwriting an existing file."""
     safe_name = Path(filename).name
     return UPLOAD_DIRECTORY / f"{uuid4().hex}-{safe_name}"
 
 
 
 def _persist_upload(source, destination: Path, max_bytes: int) -> None:
-    """Copie le fichier temporaire de Starlette vers le stockage local permanent."""
+    """Copy the Starlette temporary upload into persistent local storage."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     source.seek(0)
     bytes_written = 0
@@ -115,7 +98,7 @@ def _persist_upload(source, destination: Path, max_bytes: int) -> None:
 
 
 def _discard_failed_upload(destination: Path) -> None:
-    """Supprime un fichier uploadé qui n'a pas pu être indexé."""
+    """Remove an uploaded file that could not be indexed."""
     try:
         if destination.exists():
             destination.unlink()
@@ -126,14 +109,14 @@ def _discard_failed_upload(destination: Path) -> None:
 
 
 def _clean_text(value: Any, limit: int | None = None) -> str:
-    """Nettoie un champ texte avant stockage/indexation."""
+    """Normalize a text field before storage and indexing."""
     text = str(value or "").replace("\x00", "").strip()
     if limit is not None and len(text) > limit:
         return text[:limit]
     return text
 
 
-# Alias conservé pour les appelants existants ; une seule règle d'identité.
+# Compatibility alias: keep one shared identity rule.
 _stable_document_id = stable_document_id
 
 
@@ -142,7 +125,7 @@ def _attach_document_ids(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List[Dict[str, Any]]:
-    """Ajoute les métadonnées d'accès et borne les champs indexés."""
+    """Add access metadata and bound indexed fields."""
     normalized: list[dict[str, Any]] = []
     for document in documents:
         item = dict(document)
@@ -155,7 +138,7 @@ def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List
         item["visibility"] = settings.document_default_visibility
         for index, chunk in enumerate(text_chunks(item["snippet"], settings.max_ingested_snippet_chars)):
             fragment = {**item, "snippet": chunk, "chunk_index": index}
-            # Les identifiants fournis au parseur ne doivent pas écraser les fragments.
+            # Parser-supplied identities must not overwrite chunk identities.
             fragment.pop("_id", None)
             fragment.pop("document_id", None)
             normalized.append(fragment)
@@ -163,7 +146,7 @@ def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List
 
 
 def _enforce_document_limit(documents: List[Dict[str, Any]], source_label: str) -> None:
-    """Refuse une ingestion qui produirait trop de fragments en une requête."""
+    """Reject ingestion that would exceed the per-request fragment limit."""
     if len(documents) > settings.max_ingest_documents:
         raise HTTPException(
             status_code=413,
@@ -180,7 +163,7 @@ async def _prepare_documents(
     owner_id: str,
     source_label: str,
 ) -> List[Dict[str, Any]]:
-    """Normalise, limite, vectorise, puis ajoute les identifiants stables."""
+    """Normalize, enforce limits, embed and assign stable document identities."""
     normalized = _normalize_documents(documents, owner_id=owner_id)
     _enforce_document_limit(normalized, source_label)
     if not normalized:
@@ -192,15 +175,7 @@ async def _attach_embeddings(
     documents: List[Dict[str, Any]],
     embedding_service: HuggingFaceEmbeddingService,
 ) -> List[Dict[str, Any]]:
-    """
-    Calcule un embedding par document (title + snippet) pour la recherche vectorielle.
-
-    Non bloquant : si le fournisseur d'embeddings échoue (quota, modèle
-    indisponible, timeout), l'ingestion continue sans le champ `embedding`.
-    Ces documents restent cherchables en full-text (Atlas Search), ils
-    seront simplement absents des résultats de recherche vectorielle
-    jusqu'à ré-ingestion avec un fournisseur d'embeddings disponible.
-    """
+    """Embed each document's title and snippet. Provider errors do not cancel text ingestion: warnings report that vector search requires successful embedding. An upsert may preserve a previously stored vector when no replacement is supplied."""
     if not documents:
         return documents
     texts = [f"{document.get('title', '')}. {document.get('snippet', '')}" for document in documents]
@@ -234,7 +209,7 @@ async def reset_application_data(
     search_service: SearchService = Depends(get_search_service),
     memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> DataResetResponse:
-    """Vide la base documentaire et les données Redis temporaires, en conservant les comptes."""
+    """Clear document and temporary Redis data while retaining user accounts."""
     logger.bind(user_id=current_user.email).warning("Application data reset requested.")
     try:
         _require_admin_if_enabled(current_user, settings.reset_requires_admin, "Data reset")
@@ -263,7 +238,7 @@ async def ingest_sample_data(
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
 ) -> IngestResponse:
-    """Charge et indexe le CSV d'exemple `backend/data/ai_tooling_catalog.csv`."""
+    """Load and index the bundled backend/data/ai_tooling_catalog.csv dataset."""
     logger.bind(user_id=current_user.email).info("Sample ingest requested.")
     try:
         documents = await asyncio.to_thread(load_documents_from_csv, str(BACKEND_ROOT / "data/ai_tooling_catalog.csv"))
@@ -301,7 +276,7 @@ async def ingest_uploaded_file(
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
 ) -> FileIngestResponse:
-    """Enregistre durablement un PDF/CSV directement dans `data`, puis l'indexe."""
+    """Persist a PDF/CSV under data, then index its contents."""
     logger.bind(user_id=current_user.email).info(f"File upload ingest requested: {file.filename}")
 
     if not file.filename:
@@ -321,7 +296,7 @@ async def ingest_uploaded_file(
         )
 
         documents = await asyncio.to_thread(load_documents_from_file, str(destination), file_type)
-        # Le nom physique aléatoire protège le stockage, sans modifier l'identité logique.
+        # Random physical file names protect storage without changing logical identity.
         original_stem = Path(file.filename).stem
         for document in documents:
             document["file_name"] = Path(file.filename).name
@@ -371,7 +346,7 @@ async def ingest_batch_from_directory(
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
 ) -> BatchIngestResponse:
-    """Parcourt un dossier serveur, indexe chaque PDF/CSV trouvé, et retourne un résumé par fichier."""
+    """Index PDF/CSV files in a server directory and return per-file outcomes."""
     _require_admin_if_enabled(current_user, settings.batch_ingest_requires_admin, "Batch ingest")
     directory_path = _resolve_batch_directory(request.directory_path)
     logger.bind(user_id=current_user.email).info(

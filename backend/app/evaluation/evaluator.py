@@ -1,4 +1,4 @@
-"""Évaluateur léger branchable sur ChatWorkflow."""
+"""Lightweight evaluator for ChatWorkflow."""
 
 import time
 
@@ -9,7 +9,7 @@ from app.workflows.chat_workflow import ChatWorkflow
 
 
 class WorkflowEvaluator:
-    """Exécute des cas d'évaluation sans dépendre d'un framework externe."""
+    """Run evaluation cases without an additional evaluation framework."""
 
     def __init__(self, workflow: ChatWorkflow):
         self.workflow = workflow

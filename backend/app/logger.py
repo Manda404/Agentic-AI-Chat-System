@@ -1,42 +1,4 @@
-"""
-Logger centralisé de l'application, basé sur Loguru.
-
-C'est le SEUL endroit du projet où le logger est configuré (niveau,
-format, destinations). Partout ailleurs dans le backend, on importe
-l'objet déjà prêt à l'emploi :
-
-    from app.logger import logger
-
-    logger.info("Quelque chose s'est passé")
-    logger.bind(user_id=email).warning("Tentative suspecte")
-
-Pourquoi Loguru plutôt que le module `logging` standard ?
-- Un seul objet `logger` à importer partout, pas besoin de faire
-  `logging.getLogger(__name__)` dans chaque fichier.
-- Ajout de contexte structuré très simple avec `.bind(cle=valeur)`.
-- Rotation de fichiers de logs intégrée, sans configuration compliquée.
-
-Destinations des logs :
-- Console (stdout), colorée en développement, en JSON si LOG_FORMAT_JSON=true.
-- Fichier, dans le dossier `logs/` (créé automatiquement à la racine du
-  backend), avec rotation automatique pour ne jamais avoir un fichier
-  de logs énorme.
-
-Contexte de requête (session_id, transaction_id, agent_type, user_id, route) :
-Ce contexte permet de retrouver, dans les logs, TOUT le parcours d'une
-requête de chat : de la réception HTTP jusqu'à la réponse finale de
-l'agent, même si plusieurs requêtes s'exécutent en même temps.
-Utilisation typique (voir `workflows/chat_workflow.py`) :
-
-    set_log_context(thread_id=conversation_id, agent_type="workflow")
-    ...
-    update_log_context(route=state.route)
-    ...
-    clear_log_context()
-
-Le contexte est stocké dans une `ContextVar` (donc isolé par requête/tâche
-asyncio) et injecté automatiquement dans chaque log via `logger.patch(...)`.
-"""
+"""Central Loguru configuration. Import `logger` from this module everywhere else. Console output supports development colors or LOG_FORMAT_JSON; rotating files are configured through settings. Use logger.bind(key=value) for structured fields. Request context (session, transaction, agent, user and route) lives in a ContextVar, isolated per asynchronous task and injected by logger.patch. Call set_log_context at request entry, update_log_context as routing progresses, and clear_log_context on exit."""
 
 import contextvars
 import os
@@ -47,21 +9,21 @@ from typing import Any, Dict, Optional
 
 from loguru import logger as _logger
 
-# --- Configuration (surchargeable via variables d'environnement) ----------
+# --- Configuration (overridable through environment variables) ----------
 
 LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
 LOG_FILE_NAME = os.getenv("LOG_FILE", "multi-agent-backend.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT_JSON = os.getenv("LOG_FORMAT_JSON", "false").lower() == "true"
 LOG_ROTATION = os.getenv("LOG_ROTATION", "10 MB")
-# Nombre de fichiers de logs archivés à conserver (Loguru attend un int ici,
-# pas une chaîne du type "3 files").
+# Number of archived log files to keep (Loguru expects an integer,
+# not a string such as "3 files").
 LOG_RETENTION = int(os.getenv("LOG_RETENTION", "3"))
 LOG_TO_CONSOLE = os.getenv("LOG_TO_CONSOLE", "true").lower() == "true"
 LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").lower() == "true"
 
-# Valeurs par défaut du contexte quand aucune requête n'est en cours
-# (ex: logs émis au démarrage de l'application).
+# Default context when no request is active
+# (for example, application startup logs).
 _DEFAULT_CONTEXT: Dict[str, str] = {
     "session_id": "-",
     "transaction_id": "-",
@@ -76,21 +38,17 @@ _log_context: contextvars.ContextVar[Dict[str, str]] = contextvars.ContextVar(
 
 
 def _inject_context(record: Dict[str, Any]) -> None:
-    """Fusionne le contexte de requête courant dans chaque log émis."""
+    """Merge the current request context into each emitted log record."""
     record["extra"].update({**_DEFAULT_CONTEXT, **_log_context.get()})
 
 
 def _render_extra_fields(record: Dict[str, Any]) -> str:
-    """
-    Formate les champs ajoutés via `logger.bind(cle=valeur)` (en plus du
-    contexte fixe session/txn/agent/user/route), pour qu'ils soient
-    directement visibles dans le message, sans avoir besoin du mode JSON.
-    """
+    """Render fields added with logger.bind alongside the fixed request context in non-JSON output."""
     extra_keys = set(record["extra"].keys()) - set(_DEFAULT_CONTEXT.keys())
     if not extra_keys:
         return ""
     rendered = " ".join(f"{key}={record['extra'][key]}" for key in sorted(extra_keys))
-    # échappe les accolades pour ne pas casser le formatage de Loguru
+    # escape braces to preserve Loguru formatting
     return rendered.replace("{", "{{").replace("}", "}}")
 
 
@@ -121,25 +79,19 @@ def _file_format(record: Dict[str, Any]) -> str:
     )
 
 
-# Objet logger final à importer partout ailleurs dans le projet.
+# Configured logger to import elsewhere in the project.
 logger = _logger.patch(_inject_context)
 
 _configured = False
 
 
 def configure_logger() -> None:
-    """
-    Configure les destinations et le format des logs.
-
-    Doit être appelée une seule fois, au tout début du démarrage de
-    l'application (voir `app/main.py`). Un appel répété est sans danger :
-    la fonction ne fait rien si elle a déjà été exécutée.
-    """
+    """Configure log destinations and formatting at application startup. Repeated calls are harmless."""
     global _configured
     if _configured:
         return
 
-    logger.remove()  # retire le handler par défaut de Loguru (stderr brut)
+    logger.remove()  # remove the default Loguru stderr handler
 
     if LOG_TO_CONSOLE:
         if LOG_FORMAT_JSON:
@@ -161,13 +113,13 @@ def configure_logger() -> None:
             serialize=LOG_FORMAT_JSON,
             rotation=LOG_ROTATION,
             retention=LOG_RETENTION,
-            enqueue=True,  # écriture thread/async-safe
+            enqueue=True,  # thread-safe and async-safe writes
             encoding="utf-8",
         )
 
     _configured = True
     logger.info(
-        "Logger configuré.",
+        "Logger configured.",
         log_dir=str(LOG_DIR.resolve()) if LOG_TO_FILE else "disabled",
         level=LOG_LEVEL,
         json_format=LOG_FORMAT_JSON,
@@ -180,14 +132,7 @@ def set_log_context(
     user_id: Optional[str] = None,
     route: Optional[str] = None,
 ) -> None:
-    """
-    Démarre un nouveau contexte de log pour une requête/conversation.
-
-    `thread_id` devient le `session_id` de tous les logs suivants émis
-    dans cette même tâche asyncio, jusqu'à l'appel de `clear_log_context()`.
-    Un `transaction_id` unique est généré pour distinguer deux passages
-    dans le workflow pour la même conversation.
-    """
+    """Start request logging context: thread_id becomes session_id and a fresh transaction ID distinguishes runs in the same conversation. Clear the context on request exit."""
     context: Dict[str, str] = {
         "session_id": thread_id,
         "transaction_id": str(uuid.uuid4()),
@@ -202,12 +147,12 @@ def set_log_context(
 
 
 def update_log_context(**kwargs: Any) -> None:
-    """Met à jour une ou plusieurs clés du contexte de log courant."""
+    """Update keys in the current logging context."""
     current_context = _log_context.get().copy()
     current_context.update(kwargs)
     _log_context.set(current_context)
 
 
 def clear_log_context() -> None:
-    """Réinitialise le contexte de log (à appeler en fin de requête)."""
+    """Reset logging context at the end of the request."""
     _log_context.set({})

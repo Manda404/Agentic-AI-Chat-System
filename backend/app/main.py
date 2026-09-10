@@ -1,23 +1,10 @@
-"""
-Point d'entrée de l'application FastAPI.
-
-Ce module :
-1. Configure le logger centralisé (voir `app/logger.py`) AVANT toute
-   autre chose, pour que même les logs émis pendant l'import des autres
-   modules soient capturés correctement.
-2. Crée l'application FastAPI et empile les middlewares (sécurité,
-   rate limiting, logging HTTP, CORS).
-3. Enregistre les routers (health, auth, ingest, chat).
-
-Pour lancer le serveur en local :
-    uvicorn app.main:app --reload
-"""
+"""FastAPI entry point. Configure logging before other imports, register security, rate-limiting, HTTP logging and CORS middleware, then mount health, auth, ingestion and chat routes. Run locally with `uvicorn app.main:app --reload`."""
 
 from app.config.settings import settings
 from app.logger import configure_logger, logger
 
-# Le logger doit être configuré avant d'importer les routers et avant que
-# le lifespan ne construise le conteneur de services partagé.
+# Configure logging before importing routers and before
+# lifespan creates the shared service container.
 configure_logger()
 
 if settings.app_env.lower() not in {"development", "local", "test"} and (
@@ -43,7 +30,7 @@ from app.service_container import ApplicationServices
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Crée les clients réseau dans le worker actif, puis les ferme à l'arrêt."""
+    """Create network clients in the active worker and close them on shutdown."""
     services = ApplicationServices()
     application.state.services = services
     try:

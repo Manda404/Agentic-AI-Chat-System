@@ -1,4 +1,4 @@
-"""Métriques simples pour valider une réponse ChatResponse."""
+"""Simple metrics for checking ChatResponse contracts."""
 
 from typing import Any
 

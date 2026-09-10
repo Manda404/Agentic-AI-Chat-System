@@ -1,4 +1,4 @@
-"""Un agent, deux outils en lecture seule et des budgets imposés par le code."""
+"""Research agent with read-only tools and server-enforced budgets."""
 import asyncio
 import json
 import time
@@ -22,7 +22,7 @@ class DocumentaryAgent:
         self.timeout_seconds = settings.documentary_agent_timeout_seconds if timeout_seconds is None else timeout_seconds
 
     async def run(self, state: GraphState) -> AgentResult:
-        # Tout état mutable est propre à la requête, jamais partagé entre utilisateurs.
+        # All mutable state belongs to this request, never shared across users.
         counts = {'llm_calls': 0, 'tool_calls': 0, 'searches': 0, 'web_searches': 0}
         ledger: dict[str, SearchResult] = {}
         if state.metadata.get('collaboration_request'):
@@ -55,7 +55,7 @@ class DocumentaryAgent:
             allowed = ['clarify', 'abstain']
             if visible:
                 allowed.append('answer')
-            # Toujours réserver la dernière décision à une réponse ou une abstention.
+            # Reserve the last decision for an answer, clarification or abstention.
             if counts['llm_calls'] < self.MAX_LLM_CALLS - 1 and counts['tool_calls'] < self.MAX_TOOLS:
                 if counts['searches'] < self.MAX_SEARCHES:
                     allowed.append('rechercher')
@@ -90,7 +90,7 @@ class DocumentaryAgent:
                 self._fail(state, 'no_documents' if action.action == 'answer' and not visible else 'agent_budget_exhausted')
                 return
             if action.action == 'answer':
-                # La validation extérieure voit exactement les extraits de la dernière décision.
+                # External validation sees the exact excerpts used for the final decision.
                 state.search_results = visible
                 state.reranked_results = visible
                 state.metadata['context_document_count'] = len(visible)
@@ -134,7 +134,7 @@ class DocumentaryAgent:
                     documents, metrics = await self.tools.rechercher(
                         action.query, owner_id=state.metadata.get('user_id'), conversation_id=state.conversation_id,
                     )
-                # Conserver plusieurs recherches par identité ; les labels appartiennent au contexte courant.
+                # Merge search results by identity; labels belong to the current context.
                 for document in documents:
                     key = document.document_id
                     if not key:
@@ -142,7 +142,7 @@ class DocumentaryAgent:
                     if key not in ledger and len(ledger) < settings.max_rag_documents * 2:
                         ledger[key] = document
                     elif key in ledger and len(ledger[key].snippet) <= 500:
-                        # Une reformulation peut sélectionner une autre phrase du même passage.
+                        # A reformulated query may select a different sentence from the same passage.
                         ledger[key] = document
                 observation.update(query=action.query, passage_ids=[item.document_id for item in documents if item.document_id])
                 state.retrieval_metrics.setdefault('search_attempts', []).append(metrics)
@@ -155,7 +155,7 @@ class DocumentaryAgent:
                 observation.update(passage_id=action.passage_id)
             observation['success'] = True
         except PermissionError:
-            # Une révocation ne permet pas de répondre depuis l'ancienne copie en mémoire.
+            # Revoked access forbids answering from the earlier in-memory copy.
             self._fail(state, 'passage_unavailable')
             observation['error'] = 'passage_unavailable'
         except ValueError:
@@ -167,7 +167,7 @@ class DocumentaryAgent:
                                              output=json.dumps(observation, ensure_ascii=False), metadata=observation))
 
     def _visible_passages(self, ledger):
-        """Borne le JSON documentaire et conserve un mapping [n] vérifiable."""
+        """Bound evidence JSON and preserve a verifiable mapping of numeric citation labels."""
         limit = max(1, settings.max_rag_context_chars)
         pairs = list(ledger.items())
         passages = [{'label': i, 'passage_id': key, 'title': item.title[:100],
@@ -182,7 +182,7 @@ class DocumentaryAgent:
                 largest['text'] = largest['text'][:max(0, len(largest['text']) - max(64, excess))]
             else:
                 passages.pop()
-        # Un label sans texte n'est pas une preuve. Reconstruire un préfixe numéroté pour le validateur.
+        # A label without text is not evidence. Rebuild contiguous labels for validation.
         passages = [item for item in passages if item['text'].strip()]
         for index, item in enumerate(passages, 1):
             item['label'] = index

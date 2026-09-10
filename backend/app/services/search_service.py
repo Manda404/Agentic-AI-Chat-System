@@ -1,26 +1,4 @@
-"""
-Service de recherche documentaire basé sur MongoDB Atlas (Atlas Search).
-
-Encapsule la connexion pymongo (tolérante aux pannes — si MongoDB Atlas est
-injoignable au démarrage, le service reste utilisable mais `available` devient
-`False` et toute recherche lève une erreur explicite) et la recherche full-text
-via l'index Atlas Search configuré côté cluster (`settings.mongodb_search_index`).
-
-L'indexation (`bulk_index_documents`) attend des documents déjà enrichis d'un
-champ `embedding` par l'appelant (voir `ingest_router.py`), afin que la même
-collection serve aussi de source à `MongoVectorStore` pour la recherche
-vectorielle (Atlas Vector Search).
-
-Les méthodes de lecture acceptent `owner_id` : en `DOCUMENT_SCOPE_MODE=owner`,
-les requêtes ne voient que les documents du propriétaire et les documents
-marqués `shared`.
-
-`pymongo` est un driver SYNCHRONE : `aggregate()`/`insert_many()` bloquent le
-thread appelant le temps de l'aller-retour réseau. Comme ce service est
-utilisé depuis des méthodes `async def` (agents LangGraph, routes FastAPI),
-chaque appel bloquant est délégué à `asyncio.to_thread` pour ne jamais geler
-l'event loop pendant une requête Mongo.
-"""
+"""MongoDB Atlas document storage and text retrieval. If the startup connection fails, available is false and searches raise an explicit error. Ingestion supplies prepared embeddings so the same collection supports vector retrieval. Owner-scoped reads include the user's documents and shared documents. Blocking PyMongo runtime operations use asyncio.to_thread to avoid blocking asynchronous routes and agents."""
 
 import asyncio
 from typing import Any, Dict, List
@@ -34,10 +12,10 @@ from app.models.chat_models import SearchResult
 
 
 class SearchService:
-    """Point d'accès unique à MongoDB Atlas pour indexer et rechercher des documents (full-text)."""
+    """Shared MongoDB Atlas access for indexing and text retrieval."""
 
     def __init__(self) -> None:
-        """Tente une connexion à MongoDB Atlas ; échoue silencieusement (mode dégradé) si indisponible."""
+        """Attempt an Atlas connection; retain an explicit degraded state if unavailable."""
         self.index_name = settings.mongodb_collection
         self._client = None
         self._collection = None
@@ -71,11 +49,11 @@ class SearchService:
 
     @property
     def collection(self):
-        """Expose la collection pymongo (réutilisée par `MongoVectorStore`, évite une 2e connexion)."""
+        """Expose the connected PyMongo collection for reuse by MongoVectorStore."""
         return self._collection
 
     async def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> int:
-        """Upsert une liste de documents déjà enrichis d'un `_id` stable si possible."""
+        """Upsert prepared documents, assigning stable identities where possible."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         logger.bind(collection=self.index_name, document_count=len(documents)).info(
@@ -90,7 +68,7 @@ class SearchService:
         normalized_documents = list(normalized_by_id.values())
         from pymongo import UpdateOne
 
-        # $set préserve un vecteur existant si une réingestion identique échoue côté fournisseur.
+        # $set preserves an existing vector when identical reingestion fails at the provider.
         operations = [
             UpdateOne({"_id": document["_id"]},
                       {"$set": {key: value for key, value in document.items() if key != "_id"}},
@@ -98,7 +76,7 @@ class SearchService:
             for document in normalized_documents
         ]
         result = await asyncio.to_thread(self._collection.bulk_write, operations, ordered=False)
-        # modified_count est déjà inclus dans matched_count.
+        # modified_count is already included in matched_count.
         indexed_count = int(result.upserted_count + result.matched_count)
         logger.bind(collection=self.index_name, document_count=len(normalized_documents)).info(
             "Bulk index completed."
@@ -106,7 +84,7 @@ class SearchService:
         return indexed_count
 
     async def search(self, query: str, owner_id: str | None = None) -> List[SearchResult]:
-        """Recherche full-text (Atlas Search, compound text) sur title/snippet/category, top 5 résultats."""
+        """Run Atlas compound text search over title, snippet and category, returning up to five hits."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available. Please ingest data and check MONGODB_URI.")
         logger.bind(collection=self.index_name, query_preview=query[:120]).info(
@@ -161,7 +139,7 @@ class SearchService:
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
     async def get_passage(self, passage_id: str, owner_id: str | None = None) -> SearchResult | None:
-        """Lecture d'un fragment connu, avec le même filtre d'accès que la recherche."""
+        """Read a known fragment with the same access filter used by search."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         from bson import ObjectId
@@ -186,7 +164,7 @@ class SearchService:
         limit: int = 200,
         owner_id: str | None = None,
     ) -> List[Dict[str, Any]]:
-        """Retourne un inventaire borné des métadonnées documentaires indexées."""
+        """Return a bounded inventory of indexed document metadata."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         safe_limit = max(1, min(limit, 1000))
@@ -212,7 +190,7 @@ class SearchService:
         return await asyncio.to_thread(fetch_documents)
 
     async def clear_documents(self, owner_id: str | None = None) -> int:
-        """Supprime tous les documents de la collection sans supprimer ses index Atlas."""
+        """Remove matching documents while preserving Atlas indexes."""
         if self._collection is None:
             raise RuntimeError("MongoDB Atlas is not available.")
         filter_query = self._owner_filter(owner_id)
@@ -229,20 +207,20 @@ class SearchService:
 
     @property
     def available(self) -> bool:
-        """True si la connexion MongoDB Atlas a réussi au démarrage (utilisé par `/health`)."""
+        """Whether the startup Atlas connection succeeded, as reported by /health."""
         return self._collection is not None
 
     def close(self) -> None:
-        """Ferme le client MongoDB possédé par ce service."""
+        """Close the MongoDB client owned by this service."""
         if self._client is not None:
             self._client.close()
 
     def _with_stable_id(self, document: Dict[str, Any]) -> Dict[str, Any]:
-        """Retourne une copie du document avec `_id` et `document_id` déterministes."""
+        """Return a copy with deterministic _id and document_id fields."""
         return with_document_id(document)
 
     def _search_access_filter(self, owner_id: str | None) -> Dict[str, Any]:
-        """Filtre de visibilité appliqué aux recherches et inventaires."""
+        """Build the visibility filter applied to retrieval and inventory reads."""
         if settings.document_scope_mode != "owner":
             return {}
         if owner_id:
@@ -250,7 +228,7 @@ class SearchService:
         return {"visibility": "shared"}
 
     def _owner_filter(self, owner_id: str | None) -> Dict[str, Any]:
-        """Filtre de suppression : en mode owner, un non-admin ne supprime que ses documents."""
+        """Build the deletion filter: non-admin users in owner mode can delete only their documents."""
         if settings.document_scope_mode == "owner" and owner_id:
             return {"owner_id": owner_id}
         return {}

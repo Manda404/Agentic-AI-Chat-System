@@ -1,18 +1,4 @@
-"""
-Service d'accès au LLM, via HuggingFace Router ou Ollama (interfaces compatibles).
-
-Le router HuggingFace redirige un même client OpenAI vers différents
-modèles hébergés sur HuggingFace, selon le nom de modèle demandé. Ce
-service choisit automatiquement le modèle le plus adapté à la tâche
-(`ModelCapability`) : résumé/raisonnement, génération de code, ou
-question-réponse — chacun surchageable via les variables d'environnement
-`MODEL_SUMMARIZATION`, `MODEL_CODE_GENERATION`, etc.
-
-Si Langfuse est activé (`LANGFUSE_ENABLED=true`), chaque appel notable
-est tracé (`@observe`) pour analyser prompts/réponses/latences a
-posteriori dans le dashboard Langfuse. Sinon, `@observe` devient un
-décorateur transparent qui ne change rien au comportement.
-"""
+"""LLM access through Hugging Face Router or the optional Ollama-compatible interface. Choose the configured model with optional MODEL_* capability overrides. AsyncOpenAI avoids blocking the event loop during provider requests. Optional Langfuse decorators trace calls when enabled and otherwise leave execution unchanged."""
 
 import json
 from typing import Any, Dict, List, Optional, Type, TypeVar
@@ -60,15 +46,7 @@ class LLMService:
         self._initialize_client()
         
     def _initialize_client(self):
-        """Crée le client OpenAI asynchrone pointé vers le HuggingFace Router (si une clé API est configurée).
-
-        Le client OFFICIEL asynchrone (`AsyncOpenAI`) est utilisé plutôt que
-        `OpenAI` : `generate()` est une méthode `async def` appelée depuis des
-        agents async eux-mêmes appelés par LangGraph — un client synchrone
-        bloquerait l'event loop pendant tout l'appel HTTP (jusqu'à
-        `LLM_TIMEOUT_SECONDS`), gelant toutes les autres requêtes en cours
-        sur le même worker.
-        """
+        """Create the asynchronous provider client. Hugging Face requires a configured API key; Ollama uses its configured local endpoint. Avoid synchronous HTTP calls in async graph nodes."""
 
         if settings.llm_provider == "ollama":
             self.client = AsyncOpenAI(
@@ -88,11 +66,7 @@ class LLMService:
             logger.warning("HUGGINGFACE_API_KEY is not configured.")
 
     def get_model_for_capability(self, capability: ModelCapability) -> str:
-        """
-        Choisit le nom de modèle HuggingFace à utiliser pour une capacité donnée
-        (résumé, code, Q&A, raisonnement) : d'abord la variable d'environnement
-        dédiée si elle est définie, sinon HUGGINGFACE_MODEL. Ollama utilise OLLAMA_MODEL.
-        """
+        """Use the explicit Hugging Face capability override or HUGGINGFACE_MODEL. The optional Ollama backend uses OLLAMA_MODEL."""
         if settings.llm_provider == "ollama":
             return settings.ollama_model
         capability_models = {
@@ -107,7 +81,7 @@ class LLMService:
             logger.info(f"Using custom model for {capability.value}: {custom_model}")
             return custom_model
         
-        # Un modèle général configuré, avec surcharges par capacité seulement si nécessaires.
+        # One configured general model with capability overrides only when needed.
         return settings.huggingface_model
 
     @observe(name="llm_generate")
@@ -120,21 +94,7 @@ class LLMService:
         capability: Optional[ModelCapability] = None,
         ) -> str:
         
-        """
-        Point d'entrée bas niveau : envoie un prompt au LLM et retourne le texte généré.
-        Toutes les autres méthodes (summarize, answer_question, grounded_answer,
-        reason, generate_code) passent par ici après avoir construit leur prompt.
-
-        Args:
-            prompt: Le prompt final déjà formaté (voir `app.prompts.LLMPrompts`)
-            model: Nom de modèle explicite (prioritaire sur `capability`)
-            max_tokens: Nombre maximum de tokens générés
-            temperature: Température d'échantillonnage (0 = déterministe)
-            capability: Capacité utilisée pour sélectionner un modèle automatiquement
-
-        Returns:
-            Le texte généré par le modèle (chaîne vide si la réponse est vide)
-        """
+        """Send a formatted prompt and return generated text, or an empty string for empty content. An explicit model overrides capability-based selection; max_tokens and temperature control generation. Higher-level operations build prompts then delegate here."""
 
         if not self.client:
             raise RuntimeError("LLM client unavailable. Check LLM_PROVIDER and its configuration.")
@@ -223,7 +183,7 @@ class LLMService:
         )
 
     async def documentary_step(self, question, history, passages, observations, budget):
-        """Une décision (ou réponse finale) par appel, validée avant exécution."""
+        """Generate one action or answer per call and validate it before execution."""
         from app.models.documentary_models import DocumentaryAction
         from app.prompts.documentary_prompt import documentary_prompt
 
@@ -240,7 +200,7 @@ class LLMService:
         user_message: str,
         conversation_history: str = "",
     ) -> PlannerDecision:
-        """Produit un plan JSON validé pour le workflow agentique."""
+        """Generate a validated JSON plan for the experimental workflow."""
         prompt = LLMPrompts.planner(
             user_message=user_message,
             conversation_history=conversation_history,
@@ -259,7 +219,7 @@ class LLMService:
         draft_answer: str,
         sources: str = "",
     ) -> CriticReview:
-        """Évalue une réponse provisoire avec un format JSON validé."""
+        """Assess a candidate answer using a validated JSON schema."""
         prompt = LLMPrompts.critic_review(
             user_message=user_message,
             draft_answer=draft_answer,
@@ -278,7 +238,7 @@ class LLMService:
         user_message: str,
         documents: str,
     ) -> CorrectiveRAGReview:
-        """Évalue les documents récupérés et propose une correction de requête si nécessaire."""
+        """Assess retrieved documents and propose a query correction when needed."""
         prompt = LLMPrompts.corrective_rag_review(
             user_message=user_message,
             documents=documents,
@@ -292,7 +252,7 @@ class LLMService:
         return self._parse_json_model(raw, CorrectiveRAGReview)
 
     async def safety_review(self, answer: str) -> SafetyReview:
-        """Passe une réponse dans un garde-fou sécurité JSON."""
+        """Review an answer using the JSON safety contract."""
         prompt = LLMPrompts.safety_review(answer=answer)
         raw = await self.generate(
             prompt=prompt,
@@ -303,7 +263,7 @@ class LLMService:
         return self._parse_json_model(raw, SafetyReview)
 
     async def compress_context(self, user_message: str, documents: str, max_chars: int = 4000) -> str:
-        """Compresse un contexte documentaire avant génération RAG."""
+        """Compress documentary context before grounded generation."""
         prompt = LLMPrompts.compress_context(
             user_message=user_message,
             documents=documents,
@@ -317,7 +277,7 @@ class LLMService:
         )
 
     async def rerank_with_llm(self, user_message: str, documents: str) -> str:
-        """Point d'extension pour un futur reranking LLM/cross-encoder."""
+        """Extension point for future LLM or cross-encoder reranking."""
         prompt = LLMPrompts.rerank(user_message=user_message, documents=documents)
         return await self.generate(
             prompt=prompt,
@@ -338,7 +298,7 @@ class LLMService:
         )
 
     def _parse_json_model(self, raw: str, model: Type[TModel]) -> TModel:
-        """Parse un JSON LLM même si le modèle entoure la réponse de texte."""
+        """Parse legacy LLM JSON even when surrounded by other text."""
         text = raw.strip()
         try:
             return model.model_validate_json(text)

@@ -1,37 +1,52 @@
-# Pipeline documentaire courant
+# Current document pipeline
 
-Le parcours courant utilise Hugging Face et quatre agents : planification → recherche → synthèse → vérification, puis contrôles locaux. Le chercheur fournit preuves et brouillon ; le synthétiseur peut s’abstenir, et le vérificateur peut refuser la publication. Budget global avec une correction maximum : 13 appels LLM et 90 secondes par défaut. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
-
-État du 10 septembre 2026, après simplification. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) pour les décisions du graphe.
+The current workflow uses Hugging Face and four collaborating agents, followed by local checks. The team may make one correction and uses at most thirteen LLM calls within a default 90-second deadline. See [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
 
 ## Ingestion
 
-Les routes `sample-data`, `upload` et `batch` partagent la normalisation et la préparation des documents. Les PDF sont extraits par page ; les CSV doivent contenir `title`, `snippet` et `category`, avec `source` optionnel. Le texte long est découpé avec recouvrement sans supprimer sa fin. Les fragments portent propriétaire, visibilité, page, nom logique, ID stable et, si la vectorisation réussit, embedding et modèle d'embedding.
+`sample-data`, `upload` and `batch` share normalization and document preparation. PDF extraction preserves page boundaries; CSV requires `title`, `snippet` and `category`, with optional `source`. Long text is split with overlap without dropping its end. Fragments include owner, visibility, page, logical file name and stable ID; successful vectorization adds an embedding and model provenance.
 
-Les embeddings sont demandés par lots de 32 et vérifiés : nombre, dimension, valeurs numériques finies et vecteur non nul. Une défaillance laisse un mode textuel dégradé annoncé via `warnings` et `embedded_count`. Une ingestion réussie signifie écriture MongoDB, pas synchronisation immédiate des index Atlas.
+Embeddings are requested in batches of 32 and validated for count, dimension, finite numeric values and nonzero vectors. Failure leaves an explicitly reported text-only mode through `warnings` and `embedded_count`. Successful ingestion means a MongoDB write, not immediate Atlas index synchronization.
 
-Les écritures utilisent un upsert sans doubler `matched_count` et `modified_count`. Une réingestion identique peut conserver un vecteur existant si le fournisseur échoue ; `embedded_count` décrit les vecteurs préparés pour cette requête, pas un recomptage de la base. Le diagnostic d'index sert à vérifier les données persistées.
+Upserts do not double-count `matched_count` and `modified_count`. Identical reingestion can preserve an existing vector if the provider fails; `embedded_count` describes vectors prepared for this request, not a database recount. Index diagnostics inspect persisted data.
 
-Le cache de réponses n'existe plus : les routes d'ingestion ne dépendent plus de Redis pour incrémenter une version de cache. Redis reste utilisé par l'authentification et par le reset de l'historique.
+There is no response cache. Ingestion no longer depends on Redis to increment a cache version. Redis remains responsible for authentication and conversation history/reset.
 
-## Retrieval commun au chat et au benchmark
+## Parallel retrieval shared by chat and benchmark
 
-`services/retrieval_pipeline.py` assemble quatre composants :
+`HybridRetrieverAgent.run_parallel` starts text and vector retrieval together. Each branch has its own state and receives the same query and owner. After both finish, RRF combines the results; reranking and compression follow.
 
-1. **Full-text** : Atlas Search sur titre, snippet et catégorie ; cinq résultats au maximum, droits appliqués.
-2. **Hybride** : recherche vectorielle avec préfiltre propriétaire/partagé, fusion RRF et huit résultats au maximum. Un document a au plus un vote par branche. `vector_error` distingue une panne d'une absence de hits.
-3. **Reranking** : classement lexical, éventuellement complété par une similarité cosinus si `SEMANTIC_RERANKER_ENABLED=true`. Les embeddings stockés sont réutilisés ; les dimensions incompatibles déclenchent le repli lexical. La sélection finale est bornée par `MAX_RAG_DOCUMENTS`.
-4. **Compression** : sélection extractive locale sous `MAX_RAG_CONTEXT_CHARS`. Les labels conservés déterminent la liste documentaire réellement utilisée par le générateur et le validateur.
+```mermaid
+flowchart LR
+    Q[Research query] --> T[Atlas text search]
+    Q --> E[Query embedding]
+    E --> V[Atlas Vector Search]
+    T --> F[RRF fusion and deduplication]
+    V --> F
+    F --> R[Reranking]
+    R --> C[Excerpt compression]
+```
 
-Il n'y a pas de grader CRAG en ligne. Aucun de ces quatre composants ne génère de réponse via un LLM ; les embeddings restent des appels réseau distincts.
+`retrieval_status` is `ok`, `degraded` if one branch fails, or `unavailable` if both fail. Empty lists without errors remain a technical success. Hits from an available branch are retained. Errors expose their type, not raw provider text. Cancellation stops both asynchronous waits; an already running PyMongo thread may finish later.
 
-## Génération et validation
+`retrieval_latency_ms` reports `search`, `vector_search`, `parallel_search` (actual combined wall time) and `hybrid_fusion`. Do not sum branch durations to obtain parallel latency. One documentary tool call still counts as one agent search, even though it runs two retrieval branches.
 
-L’agent reçoit la question, l’historique, les observations et les passages sélectionnés. Il choisit entre recherche, lecture d’un fragment découvert, réponse, précision et abstention. Le code limite le parcours à quatre recherches, six outils et treize appels LLM au total, correction comprise. Le timeout est de 90 secondes par défaut. Le workflow de référence `baseline` conserve au plus une génération. Les labels `[n]` sont contrôlés avant publication. Les outils de calcul et d'inventaire sont locaux/déterministes et ne passent pas par le générateur.
+`RetrievalPipeline` assembles four components:
 
-Le contrôle des citations vérifie présence et plage, avec un signal lexical optionnel contrôlé par `CITATION_SUPPORT_REQUIRED`. Il ne prouve pas l'implication sémantique. Le validateur de contrat n'attribue aucun score de vérité. Un échec produit une abstention, sans régénération automatique.
+1. **Text retrieval:** Atlas Search over title, snippet and category, at most five hits, access filters applied.
+2. **Hybrid retrieval:** vector search with owner/shared prefilter, RRF fusion and at most eight results. A document receives at most one vote per branch. `vector_error` distinguishes an outage from no hits.
+3. **Reranking:** lexical ranking, optionally enriched by cosine similarity when `SEMANTIC_RERANKER_ENABLED=true`. Stored embeddings are reused; incompatible dimensions trigger lexical fallback. Final selection is bounded by `MAX_RAG_DOCUMENTS`.
+4. **Compression:** local extractive selection under `MAX_RAG_CONTEXT_CHARS`. Preserved labels identify the evidence available to generation and validation.
 
-## Index et migration
+There is no online CRAG grader. These four technical components do not generate LLM answers; embeddings remain separate network calls.
+
+## Generation, collaboration and validation
+
+The planner provides an objective and subquestions. The researcher sees the question, history, plan, observations and selected passages. It can search, read a discovered fragment, draft an answer, clarify or abstain. The synthesizer writes from that evidence; the verifier may request additional research or a writing correction. The team permits one return, at most four searches, six tools and thirteen LLM calls overall. The simple `baseline` retains at most one generation call.
+
+Citation checks validate presence and range with optional lexical support controlled by `CITATION_SUPPORT_REQUIRED`. They do not establish semantic entailment or assign a truth score. Local validation failure causes abstention without regeneration. Arithmetic and inventory tools do not use the generator.
+
+## Indexes and migration
 
 ```sh
 cd backend
@@ -39,16 +54,16 @@ cd backend
 .venv/bin/python -m app.evaluation.index_health --vector-definition
 ```
 
-Le vector index doit avoir `embedding` avec la bonne dimension et les champs `owner_id`/`visibility` de type `filter` pour le mode propriétaire. Documents et requêtes doivent utiliser le même modèle. Voir le [stage MongoDB Vector Search](https://www.mongodb.com/docs/vector-search/query/aggregation-stages/vector-search-stage/).
+The vector index must declare `embedding` with the correct dimension and `owner_id`/`visibility` as filter fields for owner mode. Documents and queries must use the same embedding model. See the [MongoDB Vector Search stage](https://www.mongodb.com/docs/vector-search/query/aggregation-stages/vector-search-stage/).
 
-La simplification du graphe ne modifie pas les IDs ni le stockage. La migration des anciens IDs introduite par l'audit initial reste distincte : relire [AUDIT_2026-09-10.md](AUDIT_2026-09-10.md) avant toute réingestion du corpus existant.
+Graph changes do not change storage identities. The earlier ID migration remains separate: read [AUDIT_2026-09-10.md](AUDIT_2026-09-10.md) before reingesting an existing corpus.
 
-## Limites actuelles
+## Web search
 
-Pas d'OCR ni de reconstruction robuste de tableaux PDF. Le découpage est en caractères, pas en tokens. Le modèle d'embedding par défaut et certaines heuristiques lexicales sont orientés anglais. L’agent peut utiliser l’historique pour reformuler une recherche, mais la qualité de cette résolution conversationnelle reste à évaluer. Les seuils et limites de candidats doivent être calibrés sur un corpus métier. Les changements de versions de fichiers ne retirent pas automatiquement leurs anciens fragments.
+`rechercher_web` uses Tavily in automatic mode with `TAVILY_API_KEY`. It shares the two-search-per-pass budget with documentary retrieval, allowing at most four searches when correction is used. URLs become evidence for synthesis and verification. Documents-only mode blocks this tool. Web results are not ingested into MongoDB or reread through the MongoDB passage tool.
 
-Le reranking sémantique et les composants expérimentaux doivent être évalués par comparaison au même parcours textuel/hybride de référence ; leur présence ne garantit pas un gain de qualité.
+## Current limitations
 
-La recherche web optionnelle `rechercher_web` utilise Tavily en mode automatique avec `TAVILY_API_KEY`. Elle partage le budget de deux recherches par passe (quatre maximum avec correction) avec la recherche documentaire. Les URL rejoignent les sources de synthèse et de vérification ; les tests couvrent les pannes, l’absence de clé, le budget partagé et le blocage en mode documents. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md#recherche-internet-avec-tavily).
+No OCR or robust reconstruction of PDF tables and columns. Chunking is character-based, not token-based. The default embedding model and some lexical heuristics favor English. The researcher can reformulate using history, but conversational resolution quality still needs evaluation. Candidate limits and thresholds require calibration on business data. Changed file versions do not automatically remove older fragments.
 
-La collaboration utilise un sous-graphe LangGraph à quatre nœuds, avec retours conditionnels vers le chercheur ou le synthétiseur. Les échanges sont affichés dans le frontend via `evaluation.collaboration`. Le nouveau planificateur est `PlanningAgent` ; les classes historiques du dossier expérimental restent hors ligne.
+Semantic reranking and experimental components must be evaluated against the same text/hybrid reference path. Their presence does not guarantee better answers. Local tests cover concurrent start, identical fusion, outages, cancellation and owner isolation; provider-backed quality remains a separate evaluation.

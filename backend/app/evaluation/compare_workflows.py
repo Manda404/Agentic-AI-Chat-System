@@ -1,8 +1,4 @@
-"""Comparer agent et baseline sur les mêmes cas, avec fournisseurs réels.
-
-Usage : python -m app.evaluation.compare_workflows --cases cases.json --owner-id user@example.com
-Sans --cases, utilise les cas fonctionnels du catalogue ; ce n'est pas un score de factualité.
-"""
+"""Compare the baseline and collaborative team on identical cases with real providers. Usage: python -m app.evaluation.compare_workflows --cases cases.json --owner-id user@example.com. Without --cases, run functional catalog cases; this is not a factuality score."""
 import argparse
 import asyncio
 import json
@@ -17,7 +13,7 @@ from app.workflows.chat_workflow import ChatWorkflow
 
 
 class EvaluationMemory:
-    """Historique éphémère : le benchmark n'écrit pas dans les conversations Redis."""
+    """Ephemeral history: the benchmark does not write Redis conversations."""
     def __init__(self):
         self.messages = {}
 
@@ -29,10 +25,10 @@ class EvaluationMemory:
 
 
 async def compare_workflows(baseline, agent, cases, owner_id=None):
-    """Conserve réponses et coûts d'exécution pour une annotation indépendante."""
+    """Retain answers and execution counters for independent annotation."""
     runs = []
     for index, case in enumerate(cases):
-        # Alterner l'ordre limite le biais dû à l'échauffement des services.
+        # Alternate execution order to reduce service warm-up bias.
         strategies = [('baseline', baseline), ('agent', agent)]
         if index % 2:
             strategies.reverse()

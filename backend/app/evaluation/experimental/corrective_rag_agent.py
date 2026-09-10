@@ -1,10 +1,4 @@
-"""
-Agent Corrective RAG.
-
-Un CRAG utile ne se contente pas de récupérer des passages: il évalue leur
-utilité avant génération, filtre ce qui est faible et corrige la requête quand
-le contexte initial n'est pas assez bon.
-"""
+"""Experimental corrective RAG. Assess passage usefulness, filter weak evidence and rewrite the query when initial context is insufficient."""
 
 import re
 from dataclasses import dataclass
@@ -17,7 +11,7 @@ from app.state import GraphState
 
 @dataclass(frozen=True)
 class DocumentGrade:
-    """Score local de secours pour un document candidat."""
+    """Local fallback score for one candidate document."""
 
     document: SearchResult
     label: str
@@ -28,7 +22,7 @@ class DocumentGrade:
 
 
 class CorrectiveRAGAgent:
-    """Évalue, filtre et corrige le retrieval avant la génération RAG."""
+    """Assess, filter and correct retrieval before grounded generation."""
 
     STOPWORDS = {
         "about",
@@ -62,13 +56,13 @@ class CorrectiveRAGAgent:
         min_relevance: float = 0.2,
         min_accept_confidence: float = 0.65,
     ):
-        """Prépare l'évaluateur CRAG LLM avec un fallback déterministe."""
+        """Configure the LLM grader and deterministic fallback."""
         self.llm_service = llm_service
         self.min_relevance = min_relevance
         self.min_accept_confidence = min_accept_confidence
 
     async def run(self, state: GraphState) -> AgentResult:
-        """Produit une décision CRAG et met à jour la trajectoire du graphe."""
+        """Generate a CRAG decision and update workflow state."""
         documents = state.selected_documents
         if not documents:
             return self._fallback_decision(state, [], "fallback", "No retrieved documents to evaluate.")
@@ -132,7 +126,7 @@ class CorrectiveRAGAgent:
         )
 
     async def _review(self, user_message: str, documents: list[SearchResult]) -> tuple[CorrectiveRAGReview, str]:
-        """Appelle le grader LLM, puis retombe sur un grader local si nécessaire."""
+        """Request an LLM grade, falling back to local grading if needed."""
         formatted = self._format_documents(documents)
         if self.llm_service:
             try:
@@ -148,7 +142,7 @@ class CorrectiveRAGAgent:
         kept: list[SearchResult],
         state: GraphState,
     ) -> str:
-        """Protège le graphe contre une décision LLM incohérente."""
+        """Protect the workflow from inconsistent model decisions."""
         if kept and review.decision == "accept" and review.confidence >= self.min_accept_confidence:
             return "accept"
         if (
@@ -162,7 +156,7 @@ class CorrectiveRAGAgent:
         return "fallback"
 
     def _local_review(self, user_message: str, documents: list[SearchResult]) -> CorrectiveRAGReview:
-        """Évaluateur lexical de secours quand le LLM est indisponible."""
+        """Use lexical grading when the model is unavailable."""
         grades = self._grade_documents(user_message, documents)
         relevant = [grade for grade in grades if grade.verdict == "relevant"]
         if relevant:
@@ -200,7 +194,7 @@ class CorrectiveRAGAgent:
         decision: str,
         feedback: str,
     ) -> AgentResult:
-        """Écrit une décision CRAG sans documents."""
+        """Record a CRAG decision when no documents are available."""
         state.retrieval_metrics["corrective_rag"] = {
             "enabled": True,
             "source": "fallback",
@@ -230,7 +224,7 @@ class CorrectiveRAGAgent:
         state.compressed_context = ""
 
     def _format_documents(self, documents: list[SearchResult]) -> str:
-        """Formate les candidats avec labels stables pour le grader CRAG."""
+        """Format candidates with stable labels for the CRAG grader."""
         blocks = []
         for index, item in enumerate(documents, start=1):
             location = []
@@ -247,7 +241,7 @@ class CorrectiveRAGAgent:
         return "\n\n".join(blocks)
 
     def _grade_documents(self, user_message: str, documents: list[SearchResult]) -> list[DocumentGrade]:
-        """Attribue un score borné à chaque document selon son recouvrement avec la question."""
+        """Assign a bounded relevance score from query-term overlap."""
         query_terms = self._terms(user_message)
         grades: list[DocumentGrade] = []
         for index, item in enumerate(documents, start=1):
@@ -280,12 +274,12 @@ class CorrectiveRAGAgent:
         return grades
 
     def _rewrite_query(self, user_message: str) -> str:
-        """Construit une requête de secours compacte quand le LLM n'est pas disponible."""
+        """Build a compact fallback query when the model is unavailable."""
         terms = sorted(self._terms(user_message))
         return " ".join(terms[:10]) or user_message
 
     def _terms(self, text: str) -> set[str]:
-        """Extrait les termes qui doivent réellement guider la correction."""
+        """Extract meaningful terms for retrieval correction."""
         return {
             term
             for term in re.findall(r"[a-zA-Z0-9_]+", text.lower())

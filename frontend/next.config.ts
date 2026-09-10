@@ -8,9 +8,8 @@ const localNetworkOrigins = Object.values(networkInterfaces())
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  // Next protège progressivement ses ressources de développement contre les
-  // requêtes cross-origin. Les adresses LAN courantes sont détectées plutôt
-  // que codées en dur, car elles peuvent changer avec le réseau/DHCP.
+  // Detect current LAN addresses for development resource access.
+  // Avoid hardcoding addresses that may change with the network or DHCP.
   allowedDevOrigins: localNetworkOrigins,
 };
 

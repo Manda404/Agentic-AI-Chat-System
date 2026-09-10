@@ -116,11 +116,9 @@ const EMAIL_STORAGE_KEY = "agentic-rag-platform-email";
 const THEME_STORAGE_KEY = "agentic-rag-platform-theme";
 
 const quickPrompts = [
-  "Introduce this RAG project",
-  "List the indexed documents",
-  "Summarize my documents with sources",
-  "What are the key points in my documents?",
-  "Answer using only available sources",
+  "Which documents are indexed?",
+  "Can you summarize my documents with sources?",
+  "What is the latest AI news on the web?",
 ];
 
 const WELCOME_MESSAGE = `Hello, I am the Agentic RAG Platform assistant.
@@ -269,10 +267,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    // Le script inline de layout.tsx a déjà posé data-theme sur <html> avant
-    // l'hydratation (anti-flash) ; on synchronise juste le state React dessus,
-    // puis on active les transitions douces (pas de transition sur le tout
-    // premier rendu, pour éviter un fondu visible au chargement de la page).
+    // layout.tsx sets data-theme before hydration to prevent a theme flash.
+    // Synchronize React state, then enable transitions after the first render.
     const initialTheme = (document.documentElement.getAttribute("data-theme") as ThemeMode | null) ?? "dark";
     setTheme(initialTheme);
     const raf = window.requestAnimationFrame(() => {
@@ -1511,7 +1507,7 @@ export default function Home() {
                   Answer using{" "}
                   <select aria-label="Answer source" value={answerMode} disabled={loading}
                     onChange={(event) => setAnswerMode(event.target.value as "auto" | "documents" | "general")}>
-                    <option value="auto">Documents and simple tools</option>
+                    <option value="auto">Automatic — documents and web</option>
                     <option value="documents">Documents only</option>
                     <option value="general">General knowledge (no document sources)</option>
                   </select>
@@ -1670,7 +1666,7 @@ export default function Home() {
                   />
                   {agentBudget ? <TerminalLine
                     label={<Clock size={11} />}
-                    value={`Recherche: ${agentBudget.searches ?? 0}/2 searches, ${agentBudget.tool_calls ?? 0}/3 tools, ${agentBudget.llm_calls ?? 0}/4 LLM calls, ${agentBudget.elapsed_ms ?? 0} ms${teamBudget ? ` | Équipe: ${teamBudget.llm_calls ?? 0}/${teamBudget.llm_call_budget ?? 13} appels LLM` : ""}`}
+                    value={`Research: ${agentBudget.searches ?? 0}/2 searches, ${agentBudget.tool_calls ?? 0}/3 tools, ${agentBudget.llm_calls ?? 0}/4 LLM calls, ${agentBudget.elapsed_ms ?? 0} ms${teamBudget ? ` | Team: ${teamBudget.llm_calls ?? 0}/${teamBudget.llm_call_budget ?? 13} LLM calls` : ""}`}
                     style={terminalLineStyle}
                   /> : null}
                   <TerminalLine
@@ -1681,17 +1677,17 @@ export default function Home() {
                 </div>
 
                 {collaboration.length > 0 ? (
-                  <section style={styles.terminalBlock} aria-label="Collaboration des agents">
-                    <div style={styles.terminalBlockTitle}>Collaboration des agents — dernier échange</div>
-                    <p style={styles.smallMono}>Planifier → rechercher → synthétiser → vérifier. Une correction maximum.</p>
-                    <p style={styles.smallMono}>{teamBudget?.llm_calls ?? 0}/13 appels LLM · {teamBudget?.searches ?? 0}/4 recherches · {teamBudget?.corrections ?? 0}/1 correction</p>
+                  <section style={styles.terminalBlock} aria-label="Agent collaboration">
+                    <div style={styles.terminalBlockTitle}>Agent collaboration — latest exchange</div>
+                    <p style={styles.smallMono}>Plan → research → synthesize → verify. At most one correction.</p>
+                    <p style={styles.smallMono}>{teamBudget?.llm_calls ?? 0}/13 LLM calls · {teamBudget?.searches ?? 0}/4 searches · {teamBudget?.corrections ?? 0}/1 correction</p>
                     <ol style={{ paddingLeft: 20 }}>
                       {collaboration.map((event, index) => (
                         <li key={index} style={styles.agentOutputCard}>
-                          <strong>{event.from} → {event.to}{event.correction ? " · Correction demandée" : ""}</strong>
+                          <strong>{event.from} → {event.to}{event.correction ? " · Correction requested" : ""}</strong>
                           <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{event.message}</p>
                           {event.questions?.length ? <ul>{event.questions.map((question, i) => <li key={i}>{question}</li>)}</ul> : null}
-                          {event.sources?.length ? <details><summary>{event.sources.length} preuve(s) transmise(s)</summary>
+                          {event.sources?.length ? <details><summary>{event.sources.length} shared source(s)</summary>
                             <ul>{event.sources.map((source, i) => <li key={i} style={{ overflowWrap: "anywhere" }}>{source.title} — {source.source}</li>)}</ul>
                           </details> : null}
                         </li>

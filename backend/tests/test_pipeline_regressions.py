@@ -1,4 +1,4 @@
-"""Régressions de l'audit ingestion/retrieval/évaluation, sans services externes."""
+"""Ingestion, retrieval and evaluation regressions without external services."""
 import io
 import math
 from pathlib import Path
@@ -43,7 +43,7 @@ class PipelineRegressions(unittest.IsolatedAsyncioTestCase):
         chunks = text_chunks(docs[0]['snippet'], 500)
         self.assertTrue(chunks[-1].endswith('UNIQUE END EVIDENCE'))
         self.assertTrue(all(len(chunk) <= 500 for chunk in chunks))
-        # Chaque position du texte doit appartenir à au moins un fragment.
+        # Every text position must belong to at least one chunk.
         recovered = chunks[0] + ''.join(chunk[100:] for chunk in chunks[1:])
         self.assertEqual(recovered, text)
 
@@ -166,7 +166,7 @@ class PipelineRegressions(unittest.IsolatedAsyncioTestCase):
         store = SimpleNamespace(similarity_search=AsyncMock(side_effect=RuntimeError('index not ready')))
         await HybridRetrieverAgent(store).run(state)
         self.assertEqual(state.search_results[0].title, 'A')
-        self.assertIn('index not ready', state.retrieval_metrics['vector_error'])
+        self.assertEqual('RuntimeError', state.retrieval_metrics['vector_error'])
 
     def test_rrf_does_not_reward_duplicates_within_one_branch(self):
         a, b = document('A', document_id='a'), document('B', document_id='b')

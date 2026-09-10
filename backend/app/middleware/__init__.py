@@ -1,9 +1,4 @@
-"""
-Middlewares HTTP de l'application, appliqués dans `app/main.py`.
-
-Regroupe : logs de requêtes (LoggingMiddleware), limitation de débit
-(RateLimitMiddleware) et en-têtes de sécurité (SecurityHeadersMiddleware).
-"""
+"""HTTP request logging, rate limiting and security headers registered by app.main."""
 
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.rate_limit_middleware import RateLimitMiddleware

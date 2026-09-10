@@ -1,15 +1,4 @@
-"""
-Service d'embeddings via HuggingFace Inference Providers (pipeline feature-extraction).
-
-Le endpoint OpenAI-compatible `/v1/embeddings` du HuggingFace Router ne
-dessert aucun modèle d'embedding testé (404 sur bge-small-en-v1.5,
-all-MiniLM-L6-v2, bge-m3...). La route qui fonctionne réellement est la
-route "pipeline" du provider hf-inference, exposée sous
-`router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction`
-(vérifié manuellement : 200 avec un vecteur par texte en entrée).
-
-Implémente le protocole `EmbeddingService` défini dans `retrieval_ports.py`.
-"""
+"""Hugging Face feature-extraction embeddings. Use router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction. Earlier project checks received 404 from OpenAI-compatible /v1/embeddings for tested models, while the feature-extraction pipeline returned one vector per input. Implements the EmbeddingService protocol; actual provider/model availability must still be verified for the account."""
 
 import math
 
@@ -22,7 +11,7 @@ FEATURE_EXTRACTION_URL = "https://router.huggingface.co/hf-inference/models/{mod
 
 
 def validate_embeddings(vectors, count: int, dimensions: int) -> None:
-    """Refuse les réponses partielles, token embeddings et vecteurs invalides."""
+    """Reject incomplete responses, token-level embeddings and invalid vectors."""
     if not isinstance(vectors, list) or len(vectors) != count:
         raise ValueError("Embedding response count does not match input count.")
     for vector in vectors:
@@ -35,20 +24,20 @@ def validate_embeddings(vectors, count: int, dimensions: int) -> None:
 
 
 class HuggingFaceEmbeddingService:
-    """Calcule des embeddings via la route pipeline feature-extraction du HuggingFace Router."""
+    """Compute embeddings through Hugging Face's feature-extraction pipeline."""
 
     def __init__(self):
-        """Lit le modèle d'embedding et la clé API directement depuis `settings`."""
+        """Read the embedding model and API key from settings."""
         self.model = settings.embedding_model
         self.api_key = settings.huggingface_api_key
 
     async def embed_query(self, text: str) -> list[float]:
-        """Retourne le vecteur d'embedding pour une seule requête utilisateur."""
+        """Return the embedding vector of one user query."""
         vectors = await self.embed_texts([text])
         return vectors[0]
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Calcule les embeddings de plusieurs textes en un seul appel batch."""
+        """Embed multiple texts in one batch request."""
         if not texts:
             return []
         if not self.api_key:

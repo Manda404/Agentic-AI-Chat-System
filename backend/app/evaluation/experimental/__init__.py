@@ -1,1 +1,1 @@
-"""Composants de comparaison hors ligne, non importés par le workflow HTTP."""
+"""Offline comparison components not imported by the HTTP workflow."""

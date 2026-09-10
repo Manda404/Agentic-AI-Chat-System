@@ -1,13 +1,4 @@
-"""
-Configuration centralisée de l'application, lue depuis les variables
-d'environnement (`.env`, chargé par `load_dotenv()`).
-
-C'est le SEUL endroit du projet où `os.getenv(...)` doit être appelé :
-tout le reste du code importe l'objet `settings` déjà construit.
-Chaque champ a une valeur par défaut raisonnable pour le développement
-local ; voir `backend/.env.example` pour la liste complète et des
-commentaires sur chaque variable.
-"""
+"""Central application configuration loaded from environment variables and .env through load_dotenv. Keep os.getenv calls here; other modules import the settings object. See backend/.env.example for development defaults and field descriptions."""
 
 import os
 from typing import List, Literal
@@ -21,7 +12,7 @@ IS_LOCAL_ENV = APP_ENV_VALUE.lower() in {"development", "local", "test"}
 
 
 class Settings(BaseModel):
-    """Toutes les variables de configuration du backend, avec leurs valeurs par défaut."""
+    """Backend configuration variables and their defaults."""
     app_name: str = os.getenv("APP_NAME", "Agentic RAG Platform Backend")
     app_env: str = APP_ENV_VALUE
     api_prefix: str = os.getenv("API_PREFIX", "/api/v1")
@@ -33,8 +24,8 @@ class Settings(BaseModel):
         ).split(",")
         if item.strip()
     ]
-    # En développement uniquement, autorise aussi le frontend lorsqu'il est
-    # ouvert via l'adresse privée de la machine (Wi-Fi/Ethernet).
+    # In development only, also allow the frontend when opened
+    # through the machine's private Wi-Fi/Ethernet address.
     backend_cors_dev_origin_regex: str = os.getenv(
         "BACKEND_CORS_DEV_ORIGIN_REGEX",
         r"^https?://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?$",

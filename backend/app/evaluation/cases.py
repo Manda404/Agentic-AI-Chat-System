@@ -1,4 +1,4 @@
-"""Cas d'évaluation simples pour le chat agentique."""
+"""Functional evaluation cases for agentic chat."""
 
 from dataclasses import dataclass
 

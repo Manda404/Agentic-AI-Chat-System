@@ -1,3 +1,1 @@
-"""
-Fonctions utilitaires génériques (hachage/vérification de mots de passe).
-"""
+"""Shared password hashing and verification utilities."""

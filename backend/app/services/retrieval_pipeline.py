@@ -1,4 +1,4 @@
-"""Un seul câblage du retrieval pour le chat et son benchmark."""
+"""Shared retrieval wiring for chat and its benchmark."""
 import time
 
 from app.agents.search_agent import SearchAgent
@@ -22,16 +22,15 @@ class RetrievalPipeline:
         self.compressor = ContextCompressionAgent(None, max_chars=settings.max_rag_context_chars)
 
     async def run(self, state: GraphState) -> None:
-        for name, component in (('search', self.search), ('hybrid_retriever', self.hybrid),
-                                ('reranker', self.reranker), ('context_compression', self.compressor)):
+        text_result, hybrid_result, _ = await self.hybrid.run_parallel(state, self.search)
+        state.record_result(text_result)
+        state.record_result(hybrid_result)
+        for name, component in (('reranker', self.reranker), ('context_compression', self.compressor)):
             started = time.perf_counter()
             try:
                 result = await component.run(state)
             except Exception as exc:
-                # Le vectoriel peut rester utile si Atlas Search est indisponible.
-                if name == 'search':
-                    state.search_results = []
-                elif name == 'reranker':
+                if name == 'reranker':
                     state.reranked_results = state.search_results[:settings.max_rag_documents]
                 else:
                     raise

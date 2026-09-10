@@ -1,4 +1,4 @@
-"""Recherche web Tavily, sans génération ni récupération arbitraire d'URL."""
+"""Tavily web search without answer generation or arbitrary URL fetching."""
 import hashlib
 from urllib.parse import urlsplit
 

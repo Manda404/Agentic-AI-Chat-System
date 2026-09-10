@@ -1,35 +1,39 @@
-# Agent et composants LangGraph
+# Agents and LangGraph components
 
-Le parcours courant utilise Hugging Face et quatre agents : planification → recherche → synthèse → vérification, puis contrôles locaux. Le chercheur fournit preuves et brouillon ; le synthétiseur peut s’abstenir, et le vérificateur peut refuser la publication. Budget global avec une correction maximum : 13 appels LLM et 90 secondes par défaut. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
+The current Hugging Face workflow uses four agents: planning → research → synthesis → verification, followed by local checks. The researcher supplies evidence and a draft; the synthesizer can abstain or request evidence; the verifier can reject or request a correction. One correction is allowed, with an overall ceiling of 13 LLM calls and 90 seconds by default. See [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
 
-Architecture courante du 10 septembre 2026. Le parcours documentaire est piloté par **une équipe de quatre agents**, dans un graphe de cinq nœuds. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
+## Outer graph and collaborative subgraph
 
-| Nœud | Responsabilité |
+| Outer node | Responsibility |
 |---|---|
-| `route` | Orientation locale selon la question et le mode explicite |
-| `documentary` | Agent : choisir une recherche, lire un passage découvert, répondre, demander une précision ou s’abstenir |
-| `answer` | Chemins directs : salutation, calcul, inventaire, général ou transformation de texte |
-| `validate` | Contrôle indépendant du brouillon et des citations |
-| `finalize` | Publication ou abstention, puis filtre de secrets |
+| `route` | Local routing according to the question and explicit mode |
+| `documentary` | Run the four-node team subgraph: `planner`, `researcher`, `synthesizer`, `verifier` |
+| `answer` | Direct greeting, calculation, inventory, general-answer or text-transformation paths |
+| `validate` | Independent draft and citation checks |
+| `finalize` | Publication or abstention, followed by secret filtering |
 
-Le parcours documentaire traverse `route → documentary → validate → finalize`. Les cinq nœuds ne sont donc pas cinq appels LLM successifs. La boucle interne de recherche est bornée à deux recherches, trois outils et quatre appels LLM par passe de recherche ; une seule correction est autorisée, pour treize appels LLM maximum au total. Le timeout vaut 90 secondes par défaut.
+The documentary path is `route → documentary → validate → finalize`. Five outer graph nodes do not mean five sequential LLM calls. Each research pass is limited to two searches, three tools and four LLM calls; one team-wide correction is allowed. The global timeout does not reset for correction.
 
-`DocumentaryTools` expose seulement `rechercher(query)` et `lire_passage(passage_id)`. Le serveur impose les permissions et refuse la lecture d’un ID non découvert. `RetrievalPipeline` assemble SearchAgent, HybridRetrieverAgent, RerankerAgent et ContextCompressionAgent : ces composants ne sont pas des agents autonomes supplémentaires.
+`PlanningAgent`, `SynthesisAgent` and `VerificationAgent` are defined in `agents/documentary_team.py`. `DocumentaryAgent` is defined in `agents/documentary_agent.py`. The team has conditional returns to research or synthesis, and exposes work messages through `evaluation.collaboration` in the frontend.
 
-Pour une réponse, `GraphState.selected_documents` contient les extraits exacts du dernier contexte présenté au modèle. Les labels sont ceux de cette décision. La validation locale contrôle les références ; elle ne prouve pas la vérité des affirmations. `critic_score` vaut `null` et `factuality_evaluated=false`.
+## Tools and technical components
 
-`evaluation.answer.status` distingue `answered`, `clarification_requested` et `abstained`. Les compteurs et actions sont exposés dans les diagnostics, sans raisonnement interne du modèle.
+`DocumentaryTools` exposes `rechercher(query)`, `lire_passage(passage_id)` and optional `rechercher_web(query)`. The server supplies access scope and rejects undiscovered passage IDs. The original tool names are compatibility identifiers.
 
-## Référence et expériences
+`RetrievalPipeline` assembles `SearchAgent`, `HybridRetrieverAgent`, `RerankerAgent` and `ContextCompressionAgent`. These are technical components, not additional autonomous agents. Text and vector retrieval run in parallel, then fuse through RRF. A shared query and owner scope apply to both branches; errors and branch/parallel durations are observable. See [RAG_SYSTEM.md](RAG_SYSTEM.md).
 
-`ChatWorkflow(strategy="baseline")` conserve le parcours déterministe `route → retrieve → answer → validate → finalize`, avec au plus une génération. Cette stratégie sert à comparer coût et qualité avec l’agent.
+`SummaryAgent` handles supplied-text transformations and general answers. `ToolExecutorAgent` handles arithmetic and document inventory. `CitationValidatorAgent`, `CriticAgent`, `FinalAnswerAgent` and `SafetyGuardAgent` provide local validation, publication and filtering.
 
-`evaluation/experimental/` contient LLMPlannerAgent, CorrectiveRAGAgent et LLMCriticAgent. Ils ne sont ni importés ni instanciés par le graphe HTTP.
+For a grounded answer, `GraphState.selected_documents` contains exactly the excerpts from the last research context. Labels belong to that context. Citation checks do not prove factual accuracy: `critic_score=null` and `factuality_evaluated=false` remain explicit. Answer status is `answered`, `clarification_requested` or `abstained`.
 
-## Modifier le parcours
+Tavily is available in automatic mode when `TAVILY_API_KEY` is set. It shares the two-search-per-pass budget, with four searches overall when correction is used. Web URLs enter synthesis and verification evidence. Documents-only mode blocks web access in code.
 
-Préférer une modification du composant responsable à l’ajout d’un nœud. Garder la compatibilité de `ChatResponse`, la sélection documentaire commune et les budgets imposés par le code. Tester comportements, pannes, permissions et abstention. Mettre à jour ce document, [FONCTIONNEMENT.md](FONCTIONNEMENT.md), [RAG_SYSTEM.md](RAG_SYSTEM.md) et [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) si le contrat change.
+## Reference strategies and experiments
 
-La recherche web optionnelle `rechercher_web` utilise Tavily en mode automatique avec `TAVILY_API_KEY`. Elle partage le budget de deux recherches par passe (quatre maximum avec correction) avec la recherche documentaire. Les URL rejoignent les sources de synthèse et de vérification ; les tests couvrent les pannes, l’absence de clé, le budget partagé et le blocage en mode documents. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md#recherche-internet-avec-tavily).
+`ChatWorkflow(strategy="baseline")` retains `route → retrieve → answer → validate → finalize`, with at most one generation call through `RAGAgent`. `strategy="agent"` retains the researcher-only variant for comparison.
 
-La collaboration utilise un sous-graphe LangGraph à quatre nœuds, avec retours conditionnels vers le chercheur ou le synthétiseur. Les échanges sont affichés dans le frontend via `evaluation.collaboration`. Le nouveau planificateur est `PlanningAgent` ; les classes historiques du dossier expérimental restent hors ligne.
+`evaluation/experimental/` contains the historical `LLMPlannerAgent`, `CorrectiveRAGAgent` and `LLMCriticAgent`. They are neither imported nor instantiated by the HTTP workflow. The current planner is `PlanningAgent`.
+
+## Changing the workflow
+
+Prefer changing the responsible component to adding another node. Preserve `ChatResponse` compatibility, shared evidence selection and code-enforced budgets. Test behavior, failures, access scope, abstention and correction limits. Update this document, [FONCTIONNEMENT.md](FONCTIONNEMENT.md), [RAG_SYSTEM.md](RAG_SYSTEM.md) and [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) when the contract changes.

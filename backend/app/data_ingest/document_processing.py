@@ -1,4 +1,4 @@
-"""Règles communes : découpage sans perte et identité documentaire."""
+"""Shared rules for lossless chunking and stable document identity."""
 
 import hashlib
 import json
@@ -20,7 +20,7 @@ def text_chunks(text: str, size: int, overlap: int = 150) -> list[str]:
 
 
 def stable_document_id(document: dict) -> str:
-    # Le propriétaire fait partie de l'identité même pour un document partagé.
+    # Owner is part of the identity, including for shared documents.
     keys = ("owner_id", "visibility", "source", "file_name", "page_number", "title", "snippet", "chunk_index")
     identity = [str(document.get(key) or "").strip() for key in keys]
     return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()

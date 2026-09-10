@@ -1,11 +1,11 @@
-"""Outil de consultation bornée de l'inventaire documentaire MongoDB."""
+"""Bounded read-only inventory of MongoDB documents."""
 
 from app.models.chat_models import ToolResult
 from app.services.search_service import SearchService
 
 
 class DocumentListTool:
-    """Liste les sources uniques sans lancer de recherche sémantique."""
+    """List unique sources without running semantic search."""
 
     name = "document_list"
 
@@ -19,7 +19,7 @@ class DocumentListTool:
         except Exception as exc:
             return ToolResult(
                 tool=self.name,
-                output=f"Inventaire documentaire indisponible : {exc}",
+                output=f"Document inventory unavailable: {exc}",
                 success=False,
                 metadata={"reason": type(exc).__name__},
             )
@@ -41,16 +41,16 @@ class DocumentListTool:
 
         lines: list[str] = []
         for item in sorted(sources.values(), key=lambda value: str(value["label"]).lower()):
-            details = f"{item['chunks']} fragment(s)"
+            details = f"{item['chunks']} chunk(s)"
             pages = item["pages"]
             if pages:
                 details += f", {len(pages)} page(s)"
             lines.append(f"- {item['label']} — {details}")
 
         if not lines:
-            output = "Aucun document n'est actuellement indexé."
+            output = "No documents are currently indexed."
         else:
-            output = f"Documents indexés ({len(lines)} source(s) unique(s)) :\n" + "\n".join(lines)
+            output = f"Indexed documents ({len(lines)} unique source(s)):\n" + "\n".join(lines)
         return ToolResult(
             tool=self.name,
             output=output,

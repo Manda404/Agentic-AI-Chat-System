@@ -1,6 +1,4 @@
-"""
-Schémas Pydantic pour le chat multi-agent (`chat_router.py`, `ChatWorkflow`).
-"""
+"""Pydantic schemas for multi-agent chat requests, responses and intermediate decisions."""
 
 from typing import Any, Dict, List, Literal, Optional
 
@@ -8,19 +6,19 @@ from pydantic import BaseModel, Field
 
 
 class ChatMessage(BaseModel):
-    """Un message d'historique envoyé par le frontend avec la requête de chat."""
+    """A history message supplied by the frontend with a chat request."""
     role: Literal["user", "assistant", "system"]
     content: str
 
 class ChatRequest(BaseModel):
-    """Corps attendu par `POST /api/v1/chat`."""
+    """Request body for POST /api/v1/chat."""
     message: str = Field(min_length=1)
     mode: Literal["auto", "documents", "general"] = "auto"
     conversation_id: Optional[str] = None
     history: List[ChatMessage] = Field(default_factory=list)
 
 class SearchResult(BaseModel):
-    """Un résultat de recherche MongoDB Atlas (full-text ou vectoriel), avec sa localisation source si connue."""
+    """A text, vector or web retrieval hit with source location when available."""
     document_id: Optional[str] = None
     title: str
     snippet: str
@@ -31,14 +29,14 @@ class SearchResult(BaseModel):
     embedding: Optional[List[float]] = None
 
 class AgentResult(BaseModel):
-    """Sortie brute d'un agent (search/summary/answer/...), affichée telle quelle côté frontend."""
+    """Raw agent output and metadata exposed in frontend diagnostics."""
     agent: str
     output: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolResult(BaseModel):
-    """Résultat typé d'un outil déterministe autorisé par le workflow."""
+    """Typed result of a tool authorized by the workflow."""
 
     tool: Literal["calculator", "document_list", "citation_validator", "rechercher", "rechercher_web", "lire_passage"]
     output: str
@@ -47,7 +45,7 @@ class ToolResult(BaseModel):
 
 
 class PlannerDecision(BaseModel):
-    """Plan structuré produit par le planner LLM ou son fallback déterministe."""
+    """Structured plan from the experimental planner or its deterministic fallback."""
 
     intent: Literal[
         "greeting",
@@ -71,7 +69,7 @@ class PlannerDecision(BaseModel):
 
 
 class CriticReview(BaseModel):
-    """Évaluation structurée d'une réponse provisoire."""
+    """Structured assessment of a candidate answer."""
 
     passed: bool = False
     score: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -84,7 +82,7 @@ class CriticReview(BaseModel):
 
 
 class CorrectiveRAGDocumentGrade(BaseModel):
-    """Évaluation CRAG d'un document candidat avant génération."""
+    """CRAG assessment of one candidate document before generation."""
 
     label: str
     verdict: Literal["relevant", "ambiguous", "irrelevant"] = "irrelevant"
@@ -93,7 +91,7 @@ class CorrectiveRAGDocumentGrade(BaseModel):
 
 
 class CorrectiveRAGReview(BaseModel):
-    """Décision CRAG structurée sur le contexte récupéré."""
+    """Structured CRAG decision about retrieved context."""
 
     decision: Literal["accept", "rewrite", "fallback"] = "fallback"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -103,7 +101,7 @@ class CorrectiveRAGReview(BaseModel):
 
 
 class SafetyReview(BaseModel):
-    """Résultat du garde-fou de sécurité appliqué à la réponse finale candidate."""
+    """Safety assessment of the final candidate answer."""
 
     passed: bool = True
     issues: List[str] = Field(default_factory=list)
@@ -111,7 +109,7 @@ class SafetyReview(BaseModel):
     feedback: str = "No safety issue detected."
 
 class ChatResponse(BaseModel):
-    """Réponse complète de `POST /api/v1/chat`, incluant la route choisie et les sorties des agents."""
+    """Complete POST /api/v1/chat response including the chosen route and agent outputs."""
     conversation_id: str
     route: str
     answer: str
@@ -131,7 +129,7 @@ class ChatResponse(BaseModel):
     trace_id: Optional[str] = None
 
 class ConversationContextResponse(BaseModel):
-    """Historique brut d'une conversation, retourné/vidé via `/conversations/{id}/context`."""
+    """Conversation history returned or cleared through /conversations/{id}/context."""
     conversation_id: str
     message_count: int
     messages: List[Dict[str, str]]

@@ -1,11 +1,4 @@
-"""
-Logique métier de l'authentification : inscription, connexion, lookup.
-
-Les comptes utilisateurs sont stockés dans Redis (via `RedisMemoryService`)
-sous la clé `user:<email>`, en JSON, SANS expiration (`ttl=-1`) : un
-compte créé reste valide indéfiniment. Le mot de passe n'est jamais
-stocké en clair (voir `app.utils.security.hash_password`).
-"""
+"""Registration, authentication and account lookup. Redis stores JSON accounts under user:<email> without expiration (ttl=-1). Passwords are hashed through app.utils.security and are never stored in plaintext."""
 
 import json
 from typing import Optional
@@ -16,13 +9,13 @@ from app.models.auth_models import LoginRequest, RegisterRequest, UserResponse
 from app.utils.security import hash_password, verify_password
 
 class AuthService:
-    """Gère le cycle de vie des comptes utilisateurs stockés dans Redis."""
+    """Manage the lifecycle of Redis-backed user accounts."""
 
     def __init__(self,memory_service: RedisMemoryService):
         self.memory_service = memory_service
 
     async def register_user(self,request:RegisterRequest)->UserResponse:
-        """Crée un compte si l'email n'existe pas déjà, sinon lève `ValueError`."""
+        """Create an account unless the email already exists; raise ValueError on duplicates."""
         key = self.memory_service.user_key(request.email)
         existing = await self.memory_service.get_value(key)
 
@@ -40,7 +33,7 @@ class AuthService:
         return UserResponse(email=request.email)
 
     async def authenticate_user(self, request: LoginRequest) -> Optional[UserResponse]:
-        """Vérifie l'email + mot de passe, retourne `None` si l'un des deux est invalide."""
+        """Validate email and password; return None when either is invalid."""
         key = self.memory_service.user_key(request.email)
         stored_user = await self.memory_service.get_value(key)
         if not stored_user:
@@ -55,7 +48,7 @@ class AuthService:
 
 
     async def get_user(self, email: str) -> Optional[UserResponse]:
-        """Récupère un utilisateur par email, utilisé pour valider un token JWT décodé."""
+        """Look up an email account when validating a decoded JWT."""
         key = self.memory_service.user_key(email)
         stored_user = await self.memory_service.get_value(key)
         if not stored_user:

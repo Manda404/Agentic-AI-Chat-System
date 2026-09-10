@@ -1,4 +1,4 @@
-"""Ressources partagées par toutes les routes pendant la vie du processus."""
+"""Resources shared by all routes for the lifetime of the process."""
 
 from app.config.settings import settings
 from app.memory.redis_memory import RedisMemoryService
@@ -10,7 +10,7 @@ from app.workflows.chat_workflow import ChatWorkflow
 
 
 class ApplicationServices:
-    """Construit une seule fois les clients réseau et les services qui les utilisent."""
+    """Create network clients and their services once per worker."""
 
     def __init__(self) -> None:
         self.memory = RedisMemoryService(settings.redis_url, settings.redis_ttl_seconds)
@@ -26,7 +26,7 @@ class ApplicationServices:
         )
 
     async def close(self) -> None:
-        """Ferme proprement les connexions possédées par le conteneur."""
+        """Close the connections owned by the container."""
         await self.memory.close()
         self.search.close()
         if self.llm.client is not None:

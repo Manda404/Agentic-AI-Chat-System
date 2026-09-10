@@ -1,2 +1,4 @@
 /.DS_Store
 .claude
+/.dev/
+__pycache__/

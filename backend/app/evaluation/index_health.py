@@ -1,4 +1,4 @@
-"""Diagnostic Atlas en lecture seule : python -m app.evaluation.index_health."""
+"""Read-only Atlas diagnostics: python -m app.evaluation.index_health."""
 import argparse
 import json
 
@@ -16,7 +16,7 @@ def expected_vector_definition() -> dict:
 
 
 def inspect_collection(collection) -> dict:
-    """Ne retourne aucun texte documentaire, identifiant utilisateur ou secret."""
+    """Return diagnostics without document text, user identities or secrets."""
     indexes = {item['name']: item for item in collection.list_search_indexes()}
     checks, problems = {}, []
     for kind, name in (("text", settings.mongodb_search_index), ("vector", settings.mongodb_vector_index)):

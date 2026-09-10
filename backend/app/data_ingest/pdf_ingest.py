@@ -1,10 +1,4 @@
-"""
-Extraction de texte depuis des fichiers PDF pour l'indexation MongoDB Atlas.
-
-Chaque page de PDF devient un document distinct (titre "<fichier> - Page N"),
-ce qui permet ensuite de citer précisément la page source dans les
-réponses du chat (voir `ChatWorkflow` -> `state.search_results[0].page_number`).
-"""
+"""Extract PDF text for MongoDB indexing. Each nonempty page becomes a source record with title, file name and page number so answers can cite its location; shared ingestion preprocessing may split it into chunks."""
 
 from pathlib import Path
 from typing import Dict, List
@@ -14,16 +8,7 @@ from PyPDF2 import PdfReader
 from app.logger import logger
 
 def load_documents_from_pdf(file_path: str) -> List[Dict[str, str]]:
-    """
-    Extrait le texte d'un PDF, une page = un document indexable séparément.
-
-    Args:
-        file_path: Chemin vers le fichier PDF
-
-    Returns:
-        Liste de documents (title, snippet, category, source, page_number,
-        total_pages, file_name) ; les pages vides sont ignorées.
-    """
+    """Extract nonempty PDF pages as indexable records containing title, snippet, category, source, page_number, total_pages and file_name. file_path identifies the source PDF."""
     documents: List[Dict[str, str]] = []
     
     try:
@@ -44,7 +29,7 @@ def load_documents_from_pdf(file_path: str) -> List[Dict[str, str]]:
             
             documents.append({
                 "title": f"{file_name} - Page {page_num}",
-                "snippet": text,  # Le découpage commun conserve aussi la fin de chaque page.
+                "snippet": text,  # Shared chunking preserves the end of every page.
                 "category": "pdf-document",
                 "source": f"pdf-ingest:{file_name}",
                 "page_number": str(page_num),
@@ -61,7 +46,7 @@ def load_documents_from_pdf(file_path: str) -> List[Dict[str, str]]:
     return documents
 
 def load_documents_from_pdf_full_content(file_path: str) -> List[Dict[str, str]]:
-    """Variante non utilisée par les routes actuelles : concatène TOUT le PDF en un seul document (pas de découpage par page)."""
+    """Unused alternative: concatenate the entire PDF into one record without per-page splitting."""
     documents: List[Dict[str, str]] = []
     
     try:
