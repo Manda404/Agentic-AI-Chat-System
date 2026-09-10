@@ -1,5 +1,7 @@
 # Guide du projet — Agentic RAG Platform
 
+> Document historique, antérieur à la simplification du graphe. La référence actuelle est [ARCHITECTURE_SIMPLIFIEE.md](ARCHITECTURE_SIMPLIFIEE.md).
+
 > Référence d'architecture vérifiée contre le code de la branche
 > `architecture-improvements` le **30 août 2026**.
 

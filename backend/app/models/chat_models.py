@@ -15,6 +15,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     """Corps attendu par `POST /api/v1/chat`."""
     message: str = Field(min_length=1)
+    mode: Literal["auto", "documents", "general"] = "auto"
     conversation_id: Optional[str] = None
     history: List[ChatMessage] = Field(default_factory=list)
 
@@ -39,7 +40,7 @@ class AgentResult(BaseModel):
 class ToolResult(BaseModel):
     """Résultat typé d'un outil déterministe autorisé par le workflow."""
 
-    tool: Literal["calculator", "document_list", "citation_validator"]
+    tool: Literal["calculator", "document_list", "citation_validator", "rechercher", "rechercher_web", "lire_passage"]
     output: str
     success: bool = True
     metadata: Dict[str, Any] = Field(default_factory=dict)

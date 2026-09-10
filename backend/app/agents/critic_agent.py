@@ -1,63 +1,25 @@
-"""
-Critic déterministe de secours.
-
-Le projet utilise maintenant `LLMCriticAgent` comme critic principal, mais ce
-module reste important : il fournit une validation locale, rapide et bornée si
-le LLM critic est indisponible ou renvoie une sortie invalide.
-"""
-
-from app.logger import logger
+"""Validation locale de contrat ; aucun score de factualité n'est inventé."""
 from app.models.chat_models import AgentResult
 from app.state import GraphState
 
 
 class CriticAgent:
-    """Relit la réponse candidate avec des règles simples et bornées."""
-
     async def run(self, state: GraphState) -> AgentResult:
-        """
-        Vérifie présence de réponse, ancrage documentaire et adéquation minimale.
-
-        Ce critic ne prétend pas mesurer la vérité complète : il détecte les
-        erreurs évidentes qui doivent empêcher une finalisation silencieuse.
-        """
-        candidate = state.rag_output or state.summary_output or state.search_output or state.final_answer or ""
-        feedback = []
-
-        # Règles minimales : réponse existante, documents présents, sources visibles, longueur utile.
-        if not candidate.strip():
-            feedback.append("No draft answer was produced.")
-        insufficient_evidence_answer = any(
-            marker in candidate.lower()
-            for marker in (
-                "could not find sufficiently relevant indexed documents",
-                "could not find relevant indexed documents",
-                "indexed documents do not contain",
-            )
-        )
-        if state.route in {"rag", "parallel"} and not state.search_results and not insufficient_evidence_answer:
-            feedback.append("The route expects document grounding, but no document was found.")
-        if (
-            state.search_results
-            and "Sources:" not in candidate
-            and state.route in {"rag", "parallel"}
-            and not insufficient_evidence_answer
-        ):
-            feedback.append("The grounded answer should keep visible sources.")
-        if len(candidate.strip()) < 12:
-            feedback.append("The draft answer is too short to be useful.")
-
-        state.critic_passed = not feedback
-        state.critic_feedback = "OK" if state.critic_passed else " ".join(feedback)
-
-        logger.bind(
-            conversation_id=state.conversation_id,
-            critic_passed=state.critic_passed,
-            feedback=state.critic_feedback,
-        ).info("Critic agent completed.")
-
-        return AgentResult(
-            agent="critic",
-            output=state.critic_feedback,
-            metadata={"passed": state.critic_passed},
-        )
+        issues = []
+        if not (state.draft_answer or '').strip():
+            issues.append('No answer was generated.')
+        failure = state.metadata.get('answer_failure')
+        if failure:
+            issues.append(f'Answer unavailable: {failure}.')
+        if state.route == 'rag' and not state.metadata.get('clarification_requested'):
+            if not state.selected_documents:
+                issues.append('No documentary evidence available.')
+            if not state.evaluation.get('citation_validation', {}).get('passed', False):
+                issues.append('Citations are missing or invalid.')
+        if any(not result.success for result in state.tool_results if result.tool not in {"rechercher", "rechercher_web", "lire_passage"}):
+            issues.append('A required tool failed.')
+        state.critic_passed = not issues
+        state.critic_score = None
+        state.critic_feedback = 'Local checks passed; factual accuracy is not measured.' if not issues else ' '.join(issues)
+        state.evaluation['critic'] = {'source': 'local', 'passed': state.critic_passed, 'issues': issues, 'factuality_evaluated': False}
+        return AgentResult(agent='critic', output=state.critic_feedback, metadata=state.evaluation['critic'])

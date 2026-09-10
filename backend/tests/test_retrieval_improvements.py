@@ -1,7 +1,7 @@
 import unittest
 
 from app.agents.context_compression_agent import ContextCompressionAgent
-from app.agents.corrective_rag_agent import CorrectiveRAGAgent
+from app.evaluation.experimental.corrective_rag_agent import CorrectiveRAGAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
 from app.agents.reranker_agent import RerankerAgent
 from app.memory.redis_memory import RedisMemoryService

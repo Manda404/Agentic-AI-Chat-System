@@ -188,11 +188,6 @@ async def _prepare_documents(
     return _attach_document_ids(await _attach_embeddings(normalized, embedding_service))
 
 
-async def _bump_document_version(memory_service: RedisMemoryService) -> None:
-    """Invalide les clés de cache dépendantes du corpus documentaire."""
-    await memory_service.increment_value("documents:version")
-
-
 async def _attach_embeddings(
     documents: List[Dict[str, Any]],
     embedding_service: HuggingFaceEmbeddingService,
@@ -246,7 +241,6 @@ async def reset_application_data(
         owner_id = None if _is_admin(current_user) or settings.document_scope_mode == "shared" else current_user.email
         mongodb_deleted = await search_service.clear_documents(owner_id=owner_id)
         redis_deleted = await memory_service.clear_runtime_data(owner_id=owner_id)
-        await _bump_document_version(memory_service)
         logger.bind(
             user_id=current_user.email,
             mongodb_documents_deleted=mongodb_deleted,
@@ -268,7 +262,6 @@ async def ingest_sample_data(
     current_user: UserResponse = Depends(get_current_user),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> IngestResponse:
     """Charge et indexe le CSV d'exemple `backend/data/ai_tooling_catalog.csv`."""
     logger.bind(user_id=current_user.email).info("Sample ingest requested.")
@@ -284,8 +277,6 @@ async def ingest_sample_data(
             source_label="Sample data",
         )
         indexed_count = await search_service.bulk_index_documents(documents)
-        if indexed_count:
-            await _bump_document_version(memory_service)
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             "Sample ingest completed."
         )
@@ -309,7 +300,6 @@ async def ingest_uploaded_file(
     current_user: UserResponse = Depends(get_current_user),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> FileIngestResponse:
     """Enregistre durablement un PDF/CSV directement dans `data`, puis l'indexe."""
     logger.bind(user_id=current_user.email).info(f"File upload ingest requested: {file.filename}")
@@ -350,8 +340,6 @@ async def ingest_uploaded_file(
             source_label=file.filename,
         )
         indexed_count = await search_service.bulk_index_documents(documents)
-        if indexed_count:
-            await _bump_document_version(memory_service)
 
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             f"File ingest completed: {file.filename}"
@@ -382,7 +370,6 @@ async def ingest_batch_from_directory(
     request: IngestRequest = Body(default=IngestRequest()),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> BatchIngestResponse:
     """Parcourt un dossier serveur, indexe chaque PDF/CSV trouvé, et retourne un résumé par fichier."""
     _require_admin_if_enabled(current_user, settings.batch_ingest_requires_admin, "Batch ingest")
@@ -471,8 +458,6 @@ async def ingest_batch_from_directory(
         logger.bind(user_id=current_user.email).info(
             f"Batch ingest completed: {len(results)} files, {total_indexed} documents"
         )
-        if total_indexed:
-            await _bump_document_version(memory_service)
 
         return BatchIngestResponse(
             total_files_processed=len(results),

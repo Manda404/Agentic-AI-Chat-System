@@ -43,7 +43,7 @@ type AgentResult = {
 };
 
 type ToolResult = {
-  tool: "calculator" | "document_list" | "citation_validator";
+  tool: "calculator" | "document_list" | "citation_validator" | "rechercher" | "rechercher_web" | "lire_passage";
   output: string;
   success: boolean;
   metadata: Record<string, unknown>;
@@ -127,16 +127,17 @@ const WELCOME_MESSAGE = `Hello, I am the Agentic RAG Platform assistant.
 
 Project goal:
 - turn internal documents into reliable, source-backed answers;
-- combine document search, hybrid retrieval, and review agents;
-- make the reasoning path observable through sources, agent traces, and retrieval metrics.
+- combine document search, hybrid retrieval, and local citation checks;
+- expose the processing steps through sources, traces, and retrieval metrics.
 
-Built by Manda Surel to demonstrate a cloud-deployable multi-agent RAG architecture.`;
+Built by Manda Surel to demonstrate a document assistant with a bounded RAG workflow.`;
 
 const MAX_ACTIVITY_LOGS = 100;
 
 export default function Home() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [answerMode, setAnswerMode] = useState<"auto" | "documents" | "general">("auto");
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -144,6 +145,12 @@ export default function Home() {
     },
   ]);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
+  const agentBudget = lastResponse?.evaluation?.documentary_agent as {
+    llm_calls?: number; tool_calls?: number; searches?: number; elapsed_ms?: number;
+  } | undefined;
+  const teamBudget = lastResponse?.evaluation?.documentary_team as { llm_calls?: number; llm_call_budget?: number; corrections?: number; searches?: number; tool_calls?: number } | undefined;
+  const collaboration = (lastResponse?.evaluation?.collaboration ?? []) as Array<{ from: string; to: string; message: string; questions?: string[]; sources?: Array<{ id: string; title: string; source: string }>; correction?: number }>;
+  const answerStatus = (lastResponse?.evaluation?.answer as { status?: string } | undefined)?.status ?? "--";
   const [loading, setLoading] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -809,6 +816,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: nextMessage,
+          mode: answerMode,
           conversation_id: conversationId,
           history: historyPayload,
         }),
@@ -1032,7 +1040,7 @@ export default function Home() {
             <div style={authTopBarStyle}>
               <div style={styles.monoBrand}>
                 <Bot size={16} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
-                multi-agent
+                document RAG
               </div>
               <div style={cornerMetaStyle}>
                 <span>{clock || "--:--:--"}</span>
@@ -1070,7 +1078,7 @@ export default function Home() {
                     <strong style={styles.projectBriefAuthor}>Manda Surel</strong>
                   </div>
                   <p style={styles.projectBriefText}>
-                    A multi-agent RAG platform for querying internal documents,
+                    A document assistant for querying internal documents,
                     retrieving relevant passages, and generating reviewed answers
                     with citations, traces, and retrieval context.
                   </p>
@@ -1235,7 +1243,7 @@ export default function Home() {
                 </div>
                 <div>
                   <Database size={10} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
-                  {lastResponse ? String(lastResponse.cached) : "--"}
+                  {answerStatus}
                 </div>
               </div>
             </div>
@@ -1499,6 +1507,15 @@ export default function Home() {
               </div>
 
               <div style={composerStyle}>
+                <label style={composerHintStyle}>
+                  Answer using{" "}
+                  <select aria-label="Answer source" value={answerMode} disabled={loading}
+                    onChange={(event) => setAnswerMode(event.target.value as "auto" | "documents" | "general")}>
+                    <option value="auto">Documents and simple tools</option>
+                    <option value="documents">Documents only</option>
+                    <option value="general">General knowledge (no document sources)</option>
+                  </select>
+                </label>
                 <textarea
                   value={input}
                   onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
@@ -1605,7 +1622,7 @@ export default function Home() {
                   />
                   <TerminalLine
                     label={<Database size={11} />}
-                    value={lastResponse ? String(lastResponse.cached) : "--"}
+                    value={answerStatus}
                     style={terminalLineStyle}
                   />
                   <TerminalLine
@@ -1617,7 +1634,7 @@ export default function Home() {
                     label={<AlertTriangle size={11} />}
                     value={
                       lastResponse
-                        ? `${String(Boolean(lastResponse.critic_passed))} ${lastResponse.critic_score ?? "--"} ${lastResponse.critic_feedback ?? ""}`.trim()
+                        ? `Local checks: ${lastResponse.critic_passed ? "passed" : "failed"}. ${lastResponse.critic_feedback ?? ""}`.trim()
                         : "--"
                     }
                     style={terminalLineStyle}
@@ -1651,6 +1668,11 @@ export default function Home() {
                     }
                     style={terminalLineStyle}
                   />
+                  {agentBudget ? <TerminalLine
+                    label={<Clock size={11} />}
+                    value={`Recherche: ${agentBudget.searches ?? 0}/2 searches, ${agentBudget.tool_calls ?? 0}/3 tools, ${agentBudget.llm_calls ?? 0}/4 LLM calls, ${agentBudget.elapsed_ms ?? 0} ms${teamBudget ? ` | Équipe: ${teamBudget.llm_calls ?? 0}/${teamBudget.llm_call_budget ?? 13} appels LLM` : ""}`}
+                    style={terminalLineStyle}
+                  /> : null}
                   <TerminalLine
                     label={<Link2 size={11} />}
                     value={lastResponse?.trace_id ?? conversationId ?? "new"}
@@ -1658,14 +1680,34 @@ export default function Home() {
                   />
                 </div>
 
+                {collaboration.length > 0 ? (
+                  <section style={styles.terminalBlock} aria-label="Collaboration des agents">
+                    <div style={styles.terminalBlockTitle}>Collaboration des agents — dernier échange</div>
+                    <p style={styles.smallMono}>Planifier → rechercher → synthétiser → vérifier. Une correction maximum.</p>
+                    <p style={styles.smallMono}>{teamBudget?.llm_calls ?? 0}/13 appels LLM · {teamBudget?.searches ?? 0}/4 recherches · {teamBudget?.corrections ?? 0}/1 correction</p>
+                    <ol style={{ paddingLeft: 20 }}>
+                      {collaboration.map((event, index) => (
+                        <li key={index} style={styles.agentOutputCard}>
+                          <strong>{event.from} → {event.to}{event.correction ? " · Correction demandée" : ""}</strong>
+                          <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{event.message}</p>
+                          {event.questions?.length ? <ul>{event.questions.map((question, i) => <li key={i}>{question}</li>)}</ul> : null}
+                          {event.sources?.length ? <details><summary>{event.sources.length} preuve(s) transmise(s)</summary>
+                            <ul>{event.sources.map((source, i) => <li key={i} style={{ overflowWrap: "anywhere" }}>{source.title} — {source.source}</li>)}</ul>
+                          </details> : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ) : null}
+
                 <div style={styles.terminalBlock}>
                   <div style={styles.terminalBlockTitle}>
                     <Wrench size={10} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
                     output
                   </div>
                   {lastResponse?.agent_results?.length ? (
-                    lastResponse.agent_results.map((result) => (
-                      <div key={result.agent} style={styles.agentOutputCard}>
+                    lastResponse.agent_results.map((result, index) => (
+                      <div key={`${result.agent}-${index}`} style={styles.agentOutputCard}>
                         <div style={styles.agentOutputHeader}>
                           <span>{result.agent}</span>
                           <span style={styles.smallMono}>●</span>

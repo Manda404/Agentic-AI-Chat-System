@@ -1,243 +1,75 @@
-<div align="center">
-
 # Agentic RAG Platform
 
-**Une plateforme d'assistant documentaire intelligent pour entreprises, capable de transformer des documents internes en réponses fiables, sourcées et traçables.**
+Un assistant documentaire qui transforme des PDF et CSV en réponses sourcées. Le projet associe FastAPI, MongoDB Atlas, Redis et Next.js, avec un workflow LangGraph volontairement borné.
 
-<img src="gitimg/Architecture-v0.png" alt="Chat Interface" width="600"/>
-
-<img src="gitimg/Architecture-v2.png" alt="System Overview" width="600"/>
-
-</div>
-
-## Problème Business
-
-Les entreprises accumulent de plus en plus de documents internes : procédures, rapports, politiques RH, contrats, supports de formation, documentation produit, fichiers CSV, PDF réglementaires ou bases de connaissance métier.
-
-Le problème est que cette connaissance reste souvent difficile à exploiter :
-
-- les collaborateurs perdent du temps à chercher l'information fiable ;
-- les réponses varient selon la personne, le document consulté ou le niveau d'expertise ;
-- les assistants IA classiques peuvent produire des réponses non sourcées ou inventées ;
-- les équipes métiers ont besoin de preuves, de citations et de traçabilité ;
-- les équipes techniques ont besoin d'observer ce que fait l'IA pour diagnostiquer, corriger et améliorer le système.
-
-Ce projet répond donc à une question business simple :
-
-**Comment permettre aux équipes d'une entreprise de poser des questions sur leurs documents internes et d'obtenir rapidement une réponse fiable, sourcée, contrôlée et traçable ?**
-
-L'objectif n'est pas seulement de construire un chatbot. L'objectif est de réduire le temps perdu à chercher l'information, d'améliorer la qualité des réponses internes et de rendre l'utilisation de l'IA plus fiable dans des contextes où les sources comptent.
-
-## Solution Proposée
-
-Agentic RAG Platform transforme une base documentaire interne en assistant conversationnel capable de :
-
-- **Répondre à des questions utilisateur** avec une interface web simple.
-- **Exploiter des documents internes** grâce à un pipeline RAG hybride basé sur MongoDB Atlas : full-text search + recherche vectorielle.
-- **Router intelligemment les demandes** entre réponse directe, calcul, inventaire documentaire ou recherche RAG.
-- **Produire des réponses sourcées** à partir des passages retrouvés dans les documents.
-- **Contrôler la réponse** avec un critic, une validation des citations et un safety guard.
-- **Rendre l'exécution transparente** grâce à un cockpit de debug qui affiche la route, les agents appelés, les résultats bruts, le plan, les métriques de retrieval, le critic et les informations de safety.
-
-La valeur business principale est :
-
-**moins de recherche manuelle, moins de réponses inventées, plus de confiance et plus de traçabilité dans l'utilisation de l'IA sur des connaissances internes.**
-
-## Secteurs Visés
-
-La plateforme s'adresse surtout aux organisations où la connaissance documentaire est volumineuse, critique et doit être vérifiable.
-
-**Support client, SaaS et équipes IT**
-- Assistant interne pour les agents support.
-- Recherche rapide dans les FAQ, tickets, guides produit et procédures.
-- Réponses cohérentes avec sources pour réduire le temps de résolution.
-
-**Banque, assurance et services financiers**
-- Recherche dans les procédures, politiques internes et documents de conformité.
-- Aide aux conseillers, équipes risk, audit ou compliance.
-- Besoin fort de traçabilité, de contrôle et de réponses justifiables.
-
-**Juridique, conformité et audit**
-- Analyse documentaire, recherche de clauses, obligations ou règles internes.
-- Réponses sourcées pour préparer des revues, contrôles ou audits.
-- Réduction du risque lié aux réponses non vérifiées.
-
-**Industrie, énergie et maintenance**
-- Accès rapide aux manuels techniques, fiches sécurité et procédures terrain.
-- Assistance aux équipes opérationnelles qui doivent trouver la bonne procédure au bon moment.
-- Diminution du temps de recherche dans une documentation souvent dense.
-
-**Santé, pharmacie et qualité**
-- Recherche dans des protocoles, procédures qualité, notices ou documentation réglementaire.
-- Usage pertinent pour l'assistance documentaire interne, hors diagnostic médical automatisé.
-- Secteur sensible où les sources et le contrôle sont indispensables.
-
-## Méthode De Résolution
-
-Le projet résout le problème avec un workflow multi-agent orchestré par **LangGraph** :
-
-```text
-Utilisateur
-  -> Frontend Next.js
-  -> Backend FastAPI
-  -> MemoryAgent
-  -> LLMPlannerAgent
-  -> ToolRouterAgent
-  -> Search / RAG / Direct Answer
-  -> LLMCriticAgent
-  -> SafetyGuardAgent
-  -> FinalAnswerAgent
-  -> ChatResponse
-```
-
-La méthode est la suivante :
-
-1. **Comprendre la demande** : le planner LLM identifie l’intention (avec fallback déterministe si le LLM échoue).
-2. **Choisir les bons outils** : le tool router décide si la réponse doit être directe, documentaire ou RAG.
-3. **Chercher les sources** : MongoDB Atlas Search récupère les documents pertinents (full-text).
-4. **Améliorer le contexte** : retrieval hybride (full-text + Atlas Vector Search), reranking lexical + sémantique (embeddings HuggingFace) et compression de contexte.
-5. **Générer une réponse** : le RAGAgent répond à partir des documents disponibles.
-6. **Contrôler la réponse** : le critic vérifie qualité, clarté et grounding.
-7. **Sécuriser la sortie** : le safety guard masque les secrets évidents.
-8. **Retourner une réponse compatible frontend** : avec réponse finale, agents utilisés, métriques et traces debug.
-
-## Architecture En Bref
+## Le parcours
 
 ```mermaid
 flowchart LR
-  U[Utilisateur] --> F[Next.js Frontend]
-  F --> API[FastAPI Backend]
-
-  API --> AUTH[Auth Router]
-  API --> ING[Ingest Router]
-  API --> CHAT[Chat Router]
-  API --> HLT[Health Router]
-
-  CHAT --> WF[LangGraph ChatWorkflow]
-
-  WF --> MEM[MemoryAgent]
-  MEM --> PL[LLMPlannerAgent]
-  PL --> TR[ToolRouterAgent]
-
-  TR -->|greeting| G[Greeting Node]
-  TR -->|direct / summary| SUM[SummaryAgent]
-  TR -->|calculation / document_list| TOOL[ToolExecutorAgent]
-  TR -->|document_qa / rag| SA[SearchAgent]
-
-  SA --> HY[HybridRetrieverAgent]
-  HY --> RR[RerankerAgent]
-  RR --> CC[ContextCompressionAgent]
-  CC --> RAG[RAGAgent]
-
-  RAG --> CV[CitationValidatorAgent structural + lexical]
-  CV --> CR[LLMCriticAgent]
-  G --> CR
-  SUM --> CR
-  TOOL --> CR
-
-  CR --> SG[SafetyGuardAgent]
-  SG --> FA[FinalAnswerAgent]
-  FA --> CHAT
-  CHAT --> API
-  API --> F
-
-  ING --> POL[Document Access Policy]
-  POL --> EMB[HuggingFace Embeddings]
-  POL --> MDB[(MongoDB Atlas Documents)]
-
-  SA --> MDB
-  HY --> VS[MongoVectorStore]
-  VS --> EMB
-  VS --> MDB
-
-  MEM --> RD[(Redis Memory / Cache / Users / Rate Limit)]
-  AUTH --> RD
-  CHAT --> RD
-
-  PL --> LLM[LLMService]
-  SUM --> LLM
-  RAG --> LLM
-  CR --> LLM
-  SG --> LLM
-  LLM --> HF[HuggingFace Router / Ollama Config]
-
-  WF -. optional traces .-> LF[(Langfuse)]
-  LLM -. optional traces .-> LF
+  U[Utilisateur] --> API[FastAPI : droits et historique]
+  API --> Planner[Agent planificateur]
+  Planner --> A[Agent de recherche]
+  A -->|rechercher| R[Retrieval hybride]
+  A -->|lire_passage| P[Lecture autorisée]
+  A -->|rechercher_web| W[Tavily : recherche internet]
+  W --> A
+  R --> A
+  P --> A
+  A --> S[Agent de synthèse]
+  S --> C[Agent de vérification]
+  C -->|Recherche complémentaire| A
+  C -->|Correction rédactionnelle| S
+  S -->|Preuve manquante| A
+  C -->|Approbation| V[Validation locale]
+  V --> F[Réponse sourcée / précision / abstention]
 ```
 
-**Backend**
-- FastAPI pour l’API HTTP.
-- LangGraph pour l’orchestration multi-agent.
-- Redis Cloud pour l’historique conversationnel, le cache, les comptes et le rate limiting partagé.
-- MongoDB Atlas (Atlas Search + Atlas Vector Search) pour la recherche documentaire hybride (full-text + sémantique).
-- Cloisonnement documentaire configurable (`shared` localement, `owner` conseillé hors dev) avec visibilité `shared/private`.
-- HuggingFace Router compatible OpenAI pour les appels LLM.
-- Loguru et Langfuse optionnel pour l’observabilité.
+- Ingestion PDF/CSV avec découpage, IDs stables et métadonnées de propriétaire.
+- Recherche textuelle et vectorielle, fusion RRF, reranking et compression locale.
+- Quatre agents spécialisés : planification, recherche autonome, synthèse et vérification avec une correction maximum, avec Hugging Face.
+- Budgets : 4 recherches, 6 outils et 13 appels LLM maximum, correction comprise ; 90 secondes par défaut.
+- Salutation, calcul et inventaire restent disponibles sans LLM.
+- Contrôle local des citations et abstention si le contrat documentaire échoue.
+- Modes explicites : documents avec outils simples, documents seuls ou connaissances générales.
+- Interface de chat, upload et diagnostics détaillés.
 
-**Frontend**
-- Next.js / React / TypeScript.
-- Interface de chat.
-- Cockpit de debug : route, agents, sorties brutes, plan, critic, safety, retrieval metrics.
+Le système est un **prototype avancé d'assistant documentaire**. Les citations ne prouvent pas à elles seules la factualité ; les PDF scannés nécessitent encore de l'OCR et la qualité métier doit être mesurée sur un corpus de référence.
 
-**Agents Principaux**
-- `MemoryAgent`
-- `LLMPlannerAgent`
-- `ToolRouterAgent`
-- `SearchAgent`
-- `HybridRetrieverAgent`
-- `RerankerAgent`
-- `ContextCompressionAgent`
-- `RAGAgent`
-- `LLMCriticAgent`
-- `SafetyGuardAgent`
-- `FinalAnswerAgent`
+## Démarrage
 
-## Ce Que Le Projet Démontre
+Copier `backend/.env.example` vers `backend/.env`, puis configurer MongoDB Atlas, Redis et le fournisseur de génération. Les index Atlas Search et Vector Search doivent exister et être queryable.
 
-- Une architecture multi-agent claire et extensible.
-- Un workflow LangGraph réel, pas seulement une orchestration manuelle.
-- Un RAG progressif : recherche hybride avec fusion RRF, reranking, compression extractive, réponse sourcée.
-- Une compatibilité API stable avec `/api/v1/chat`.
-- Des champs debug utiles : `plan`, `critic_score`, `retrieval_metrics`, `safety_feedback`, `trace_id`.
-- Une base pédagogique pour aller vers un système agentique plus robuste.
-
-## Démarrage Rapide
-
-1. Copier `backend/.env.example` vers `backend/.env` et renseigner les clés nécessaires : clé HuggingFace, URI Redis Cloud (`REDIS_URL`) et URI MongoDB Atlas (`MONGODB_URI`). Aucun conteneur local n'est requis, Redis et MongoDB tournent tous les deux en cloud (tiers gratuits).
-2. Installer les dépendances (backend + frontend) :
-
-```bash
+```sh
 make install
-```
-
-3. Démarrer le backend et le frontend ensemble :
-
-```bash
 make dev
 ```
 
-Ça lance le backend (`:8000`) et le frontend (`:3000`) en parallèle dans le même terminal, avec un seul `Ctrl+C` pour tout arrêter. Chaque service reste aussi disponible séparément via `make backend` ou `make frontend`.
+Frontend : `http://localhost:3000`. Backend : `http://localhost:8000`.
 
-4. Ouvrir :
+Pour HuggingFace, configurer `LLM_PROVIDER=huggingface`, `HUGGINGFACE_API_KEY` et `HUGGINGFACE_MODEL`. Les surcharges `MODEL_*` sont facultatives. Hugging Face est le fournisseur par défaut ; aucun serveur Ollama n’est nécessaire. Pour activer la recherche internet en mode automatique, ajouter `TAVILY_API_KEY` dans `backend/.env` et redémarrer le backend.
 
-```text
-http://localhost:3000
+## Vérification
+
+```sh
+make test
+cd backend
+.venv/bin/python -m app.evaluation.index_health
+.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose
+.venv/bin/python -m app.evaluation.compare_workflows
 ```
+
+Le diagnostic d'index est en lecture seule. Le benchmark complet utilise Atlas et HuggingFace ; il attend le corpus de référence déjà ingéré. En mode propriétaire, ajouter `--owner-id <propriétaire-du-corpus>`.
 
 ## Documentation
 
-- [Audit du 10 septembre 2026 : défauts corrigés, mesures Atlas et prochaines étapes](docs/AUDIT_2026-09-10.md).
-
-Pour aller plus loin :
-
-- [Fonctionnement, pas à pas](docs/FONCTIONNEMENT.md) — comment marche le projet, du démarrage à la réponse, étape par étape.
-- [Guide du projet](docs/GUIDE_PROJET.md) — architecture, stack, workflow, sécurité, limites connues, roadmap.
-- [Agents](docs/AGENTS.md) — rôle et fonctionnement détaillé de chaque agent.
-- [RAG — détail du pipeline et limites connues](docs/RAG_SYSTEM.md)
+- [Architecture actuelle : quatre agents collaboratifs avec Hugging Face](docs/ARCHITECTURE_AGENT.md)
+- [Workflow simple conservé comme référence](docs/ARCHITECTURE_SIMPLIFIEE.md)
+- [Fonctionnement pas à pas](docs/FONCTIONNEMENT.md)
+- [Composants du workflow](docs/AGENTS.md)
+- [Pipeline RAG](docs/RAG_SYSTEM.md)
 - [Évaluation](docs/EVALUATION.md)
+- [Audit initial : ingestion, indexation et dysfonctionnements corrigés](docs/AUDIT_2026-09-10.md)
 
-## Positionnement
+Le workflow simple reste accessible à l’évaluation via `ChatWorkflow(strategy="baseline")`. Les composants LLM de planification, CRAG et critique sont conservés dans `backend/app/evaluation/experimental/` pour des comparaisons hors ligne. Ils ne participent plus au chat courant.
 
-Ce projet est un **prototype avancé de plateforme RAG** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
-
-Cette branche améliore plusieurs points critiques : ingestion idempotente avec IDs stables, fusion hybride RRF, réutilisation des embeddings au reranking, compression locale plus sélective, critic conditionnel mais imposé sur le RAG, contrôle d'accès documentaire configurable, limites d'ingestion, reset/batch administrables et rate limiting Redis avec fallback local. Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant, les rôles fins et l’évaluation continue restent des pistes d’évolution.
+Projet créé par Manda Surel.

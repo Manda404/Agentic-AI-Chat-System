@@ -1,222 +1,69 @@
-# Tests et évaluation
+# Évaluer le projet
 
-> Mise à jour du 10 septembre 2026 : consulter [l’audit et les corrections](AUDIT_2026-09-10.md) pour les contrats actuels d’ingestion, sélection des sources, cache, retries et évaluation. Les descriptions historiques ci-dessous doivent être lues avec ces changements.
+Le parcours courant utilise Hugging Face et quatre agents : planification → recherche → synthèse → vérification, puis contrôles locaux. Le chercheur fournit preuves et brouillon ; le synthétiseur peut s’abstenir, et le vérificateur peut refuser la publication. Budget global avec une correction maximum : 13 appels LLM et 90 secondes par défaut. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
 
-> Inventaire vérifié et commandes exécutées le **30 août 2026**.
+État du 10 septembre 2026, après simplification. Séparer trois questions : le code fonctionne-t-il, les bons documents remontent-ils, les réponses sont-elles justes ?
 
-## 1. État vérifié
+## 1. Tests de contrats sans fournisseurs
 
-```bash
+```sh
 make test
-# Ran 32 tests ... OK
-
-cd frontend
-npm run build
-# compilation, lint/type checking et génération statique : OK
 ```
 
-Le build frontend n'est pas un test fonctionnel du navigateur. Il vérifie la
-compilation Next.js et les types, pas les appels à l'API ni les interactions UI.
+La suite vérifie ingestion, isolation, indexation, calcul, sélection des sources, citations et parcours LangGraph. Les tests du graphe utilisent des doubles de MongoDB/Redis/LLM : ils vérifient la baseline avec au plus une génération, l’agent avec ses limites de quatre recherches/six outils/treize appels LLM pour l’équipe avec une correction maximum, ses permissions, ses timeouts, son contrat JSON, la clarification, les chemins sans LLM, l'historique, les pannes, le choix de fournisseur et l'abstention. Ils ne mesurent pas la qualité réelle d'un modèle.
 
-## 2. Tests backend isolés
+Pour garantir un lancement local sans observabilité distante :
 
-La suite utilise `unittest` et `IsolatedAsyncioTestCase`.
-
-| Fichier | Couverture réelle |
-|---|---|
-| `test_langgraph_workflow.py` | compilation, appels d'agents, greeting, chemins RAG/outils, citation validator, retry direct, critic/safety, rédaction de secret |
-| `test_data_reset.py` | reset Redis global et owner-scoped en conservant les comptes, suppression MongoDB sans supprimer collection/index |
-| `test_prompt_contracts.py` | inventaire des prompts, JSON structuré, résumé documentaire via RAG, contraintes compressor/reranker |
-| `test_rag_prompt.py` | séparation question/documents/historique, grounding, citations, langue, calculs et injection indirecte |
-| `test_tools.py` | calcul AST sûr, refus d'exécution de code, inventaire documentaire et validation structurelle + support lexical des citations |
-| `test_retrieval_improvements.py` | fusion RRF, réutilisation embeddings, compression sélective, IDs stables, filtres owner, métadonnées d'ingestion |
-
-Les tests du workflow utilisent des fakes pour le LLM, la mémoire et le search.
-Ils ne contactent normalement ni Redis ni MongoDB et ne mesurent pas la qualité
-des réponses d'un vrai modèle.
-
-### Langfuse pendant les tests
-
-Si le fichier `backend/.env` contient `LANGFUSE_ENABLED=true`, les décorateurs
-sont activés dès l'import des modules. Même avec des fakes, une tentative
-d'export de traces peut apparaître en fin de test. Pour une exécution isolée :
-
-```bash
-LANGFUSE_ENABLED=false make test
-```
-
-### Ce qui n'est pas couvert
-
-- routes FastAPI avec un vrai client HTTP ;
-- JWT expiré, `/auth/me` et restauration de session frontend ;
-- cache hit et invalidation via API HTTP ;
-- exécution complète d'un second appel LLM pendant les retries critic ;
-- panne Redis après démarrage ;
-- ingestion réelle PDF/CSV, limites upload/batch et erreurs de parsing ;
-- CORS, rate limit Redis et headers ;
-- composants/interactions frontend ;
-- charge, concurrence et régression de performance async.
-
-## 3. Évaluateur bout en bout du workflow
-
-Fichiers :
-
-- `backend/app/evaluation/cases.py` ;
-- `backend/app/evaluation/metrics.py` ;
-- `backend/app/evaluation/evaluator.py`.
-
-`DEFAULT_EVALUATION_CASES` contient 6 scénarios : greeting, question
-documentaire, hors corpus, résumé, correction et demande ambiguë.
-`WorkflowEvaluator.run_cases()` appelle une vraie instance de `ChatWorkflow` et
-évalue :
-
-- égalité de route ;
-- réponse non vide ;
-- présence de sources lorsque demandée ;
-- verdict critic attendu lorsque le cas le précise.
-
-Il n'existe pas actuellement de CLI ou de cible Make dédiée à cet évaluateur.
-Il faut l'instancier depuis un script ou un test.
-
-### `critic_observed`
-
-`score_response()` calcule :
-
-```python
-any(result.agent in {"critic", "critic_skipped"} for result in response.agent_results)
-```
-
-La métrique vérifie donc maintenant que le critic a été exécuté ou explicitement
-sauté par politique, au lieu de s'appuyer seulement sur le booléen
-`critic_passed`.
-
-### Limites générales
-
-- les routes produites par un vrai planner LLM peuvent varier ;
-- les résultats dépendent des données et services externes ;
-- aucune réponse de référence n'est comparée ;
-- aucune mesure de factualité, style ou groundedness n'est calculée.
-
-## 4. Benchmark de retrieval
-
-Fichiers :
-
-- `retrieval_cases.py` : 10 questions et titres pertinents ;
-- `retrieval_metrics.py` : Precision@k, Recall@k, reciprocal rank et NDCG@k ;
-- `retrieval_benchmark.py` : exécution des vrais services/agents.
-
-Le benchmark mesure trois étages :
-
-| Étage | Exécution |
-|---|---|
-| `full_text` | `SearchService.search()` |
-| `hybrid` | + `HybridRetrieverAgent` et Atlas Vector Search |
-| `reranked` | + `RerankerAgent` lexical/sémantique |
-
-### Prérequis
-
-1. `MONGODB_URI` valide ;
-2. index Atlas Search et Vector Search créés ;
-3. `HUGGINGFACE_API_KEY` valide pour la branche dense/sémantique ;
-4. catalogue `backend/data/ai_tooling_catalog.csv` déjà ingéré via
-   `/api/v1/ingest/sample-data` ;
-5. idéalement, corpus de test propre pour éviter que des documents hors jeu
-   d'évaluation influencent les scores.
-
-La cible `/ingest/sample-data` exige un JWT. Le bouton `INGESTION DATA` du
-frontend appelle plutôt `/ingest/batch`, qui ingère tout le dossier `data`.
-
-### Commandes
-
-Depuis la racine :
-
-```bash
-make eval-retrieval
-```
-
-Ou :
-
-```bash
+```sh
 cd backend
-.venv/bin/python -m app.evaluation.retrieval_benchmark
-.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose
-.venv/bin/python -m app.evaluation.retrieval_benchmark --k 3
+APP_ENV=test LANGFUSE_ENABLED=false LANGFUSE_TRACING_ENABLED=false HUGGINGFACE_API_KEY='' MONGODB_URI='' .venv/bin/python -m unittest discover -s tests
 ```
 
-Le `k` par défaut vaut `MAX_RAG_DOCUMENTS`.
+## 2. Diagnostic et retrieval réel
 
-## 5. Interprétation des métriques
-
-- **Precision@k** : proportion de documents pertinents dans les `k` places. Le
-  dénominateur reste `k`, même si moins de résultats sont retournés.
-- **Recall@k** : proportion de tous les documents pertinents retrouvés dans le
-  top-k.
-- **MRR** : moyenne de l'inverse du rang du premier document pertinent. `1.0`
-  signifie qu'un document pertinent est toujours premier.
-- **NDCG@k** : récompense les documents pertinents placés tôt et normalise par le
-  classement idéal.
-
-Le benchmark déduplique les titres avant le calcul, car `SearchService` peut
-retourner plusieurs copies après réingestion. Cette déduplication par titre peut
-elle-même masquer deux documents distincts ayant le même titre.
-
-Sur le petit catalogue fourni, les questions sont proches des textes et les
-scores peuvent saturer. Une égalité entre full-text, hybride et reranking ne
-démontre pas que les étapes supplémentaires sont inutiles ; elle signifie que le
-jeu est trop simple pour les distinguer.
-
-## 6. Étendre le jeu de vérité terrain
-
-Pour un corpus métier :
-
-1. stabiliser des identifiants documentaires, plutôt que le titre seul ;
-2. créer des requêtes naturelles, ambiguës, multilingues et avec synonymes ;
-3. annoter tous les documents pertinents, pas seulement un résultat attendu ;
-4. ajouter des cas sans résultat pertinent ;
-5. séparer un jeu de calibration et un jeu de validation ;
-6. mesurer par type de document, langue et longueur ;
-7. comparer les distributions avant/après chaque changement de score.
-
-Les cas actuels utilisent `relevant_titles`; modifier ce contrat serait utile
-avant un corpus où les titres ne sont pas uniques.
-
-## 7. Évaluation de génération à ajouter
-
-Le benchmark retrieval ne dit pas si la réponse finale est correcte. Une suite
-complète devrait mesurer :
-
-- exactitude par rapport à une réponse de référence ;
-- couverture des éléments attendus ;
-- groundedness de chaque affirmation ;
-- validité et précision des citations `[n]` ;
-- taux de refus correct lorsque le corpus ne répond pas ;
-- langue et respect du format demandé ;
-- fuite de secrets et résistance aux instructions dans les documents ;
-- latence p50/p95, appels HF, tokens et coût ;
-- taux de fallback planner/critic/RAG ;
-- stabilité du résultat sur plusieurs exécutions.
-
-## 8. Tests frontend et intégration à ajouter
-
-Priorités recommandées :
-
-1. test du démarrage avec backend inaccessible et message utilisateur clair ;
-2. register → login automatique → restauration via `/auth/me` ;
-3. expiration JWT et logout ;
-4. upload PDF/CSV, rejet d'extension et reset confirmé/annulé ;
-5. envoi `Cmd/Ctrl+Enter`, état loading et rendu des citations ;
-6. cockpit alimenté par un `ChatResponse` complet ;
-7. statuts health distinguant configuration et disponibilité LLM ;
-8. test API de cache miss/hit et invalidation après ingestion/reset.
-
-## 9. Critère minimal avant fusion d'un changement RAG
-
-```text
-1. make test passe
-2. npm run build passe
-3. benchmark retrieval exécuté sur un corpus propre
-4. métriques avant/après conservées dans la PR
-5. aucun recul inexpliqué de Recall@k, MRR ou NDCG@k
-6. cas de fallback et absence de documents vérifiés
-7. documentation RAG et configuration mises à jour
+```sh
+cd backend
+.venv/bin/python -m app.evaluation.index_health
+.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose --k 5
 ```
+
+Le diagnostic est en lecture seule ; il vérifie index présents/queryable, dimension déclarée et champs de préfiltre, compte des documents vectorisés et provenance du modèle.
+
+Le benchmark complet utilise Atlas et HuggingFace. Le CSV de référence doit être ingéré au préalable et les index prêts. En mode propriétaire, préciser `--owner-id <propriétaire-du-corpus>`. L'outil mesure Precision@k, Recall@k, MRR et NDCG@k sur full-text, hybride et reranking avec le même câblage que le chat. Il échoue explicitement si un étage vectoriel requis est indisponible.
+
+Les doublons conservent leur place mais ne gagnent pas deux fois de pertinence. Precision@k divise toujours par k. Les dix cas du catalogue utilisent des titres comme référence : pour un vrai corpus de fragments, passer à des IDs/page/passage annotés. Ces scores ne mesurent ni compression ni génération.
+
+## 3. Réponse et abstention
+
+`WorkflowEvaluator` reçoit une instance de `ChatWorkflow`. Chaque `EvaluationCase` définit route, mode (`auto/documents/general`), sources attendues et `expected_status` (`answered`, `clarification_requested` ou `abstained`). Un cas sans réponse doit récompenser une abstention correcte ; il ne doit pas exiger artificiellement `critic_passed=true`.
+
+Les résultats incluent la réponse pour permettre sa relecture. Les contrôles portent sur route, non-vide, état attendu, citations, contrôles locaux et succès de génération. Un texte non vide n'est pas une preuve de réponse correcte.
+
+Le champ `critic_score` vaut `null` et `factuality_evaluated=false` dans le parcours courant. Un agent de vérification intervient en ligne ; son avis ne constitue pas une mesure indépendante de factualité. Les composants de planification, CRAG et critique sont conservés dans `evaluation/experimental/` pour des expériences séparées ; ils n'exposent pas à eux seuls une mesure de qualité validée.
+
+## Protocole de comparaison
+
+Créer un corpus versionné de questions françaises/anglaises avec réponses, pages et citations attendues, cas sans preuve et cas de droits d'accès. Réserver un jeu non utilisé pour le réglage. Mesurer :
+
+- exactitude des réponses et adéquation des citations, par annotation indépendante ;
+- abstentions correctes et abusives ;
+- Recall@k et qualité du classement ;
+- latence p50/p95, appels fournisseurs et coût ;
+- résultats séparés sur PDF, tableaux, paraphrases et questions conversationnelles.
+
+Comparer l’agent courant au parcours simple conservé :
+
+```sh
+cd backend
+.venv/bin/python -m app.evaluation.compare_workflows --cases cases.json --owner-id <propriétaire-du-corpus>
+```
+
+Le fichier JSON contient une liste d’objets `EvaluationCase`. Sans `--cases`, les cas fonctionnels du catalogue sont utilisés. Le comparateur alterne l’ordre des stratégies et conserve réponses, statuts, latences et compteurs. L’historique reste en mémoire, sans écriture dans Redis. L’exécution réelle utilise Atlas et les fournisseurs configurés ; elle peut transmettre questions et passages au fournisseur de génération ou d’embeddings.
+
+`contracts_passed` mesure les contrats logiciels, pas la factualité. Les compteurs LLM/outils ne sont pas un coût monétaire. Les résultats doivent être annotés indépendamment pour établir un gain métier. Le comparateur et les budgets ont été testés localement avec des doubles ; aucune amélioration de qualité auprès d’un fournisseur réel n’est affirmée.
+
+Introduire ensuite une variation à la fois : reranking, paramètres de recherche ou budget. Les chiffres de l’audit initial ne sont pas une validation sémantique de cette architecture. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md).
+
+La recherche web optionnelle `rechercher_web` utilise Tavily en mode automatique avec `TAVILY_API_KEY`. Elle partage le budget de deux recherches par passe (quatre maximum avec correction) avec la recherche documentaire. Les URL rejoignent les sources de synthèse et de vérification ; les tests couvrent les pannes, l’absence de clé, le budget partagé et le blocage en mode documents. Voir [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md#recherche-internet-avec-tavily).
+
+La collaboration utilise un sous-graphe LangGraph à quatre nœuds, avec retours conditionnels vers le chercheur ou le synthétiseur. Les échanges sont affichés dans le frontend via `evaluation.collaboration`. Le nouveau planificateur est `PlanningAgent` ; les classes historiques du dossier expérimental restent hors ligne.

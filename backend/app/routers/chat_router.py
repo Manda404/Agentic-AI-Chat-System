@@ -2,7 +2,7 @@
 Routes de chat : le cœur fonctionnel exposé aux utilisateurs authentifiés.
 
 - `POST /api/v1/chat` : envoie un message au `ChatWorkflow`, qui décide
-  de la route (greeting/search/summary/parallel) et orchestre les agents.
+  de la route (rag/direct_answer/greeting/outils) et suit les cinq étapes.
 - `GET/DELETE /api/v1/conversations/{id}/context` : consulter ou vider
   l'historique d'une conversation stocké dans Redis.
 

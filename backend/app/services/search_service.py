@@ -160,6 +160,27 @@ class SearchService:
             )
             raise RuntimeError(f"MongoDB Atlas Search query failed: {exc}") from exc
 
+    async def get_passage(self, passage_id: str, owner_id: str | None = None) -> SearchResult | None:
+        """Lecture d'un fragment connu, avec le même filtre d'accès que la recherche."""
+        if self._collection is None:
+            raise RuntimeError("MongoDB Atlas is not available.")
+        from bson import ObjectId
+
+        ids: list[Any] = [passage_id]
+        if ObjectId.is_valid(passage_id):
+            ids.append(ObjectId(passage_id))
+        identity = {"$or": [{"document_id": passage_id}, {"_id": {"$in": ids}}]}
+        query = {"$and": [identity, self._search_access_filter(owner_id)]}
+        hit = await asyncio.to_thread(self._collection.find_one, query, {"embedding": 0})
+        if hit is None:
+            return None
+        return SearchResult(
+            document_id=str(hit.get("document_id") or hit["_id"]),
+            title=hit.get("title", "Untitled"), snippet=hit.get("snippet", ""),
+            source=hit.get("source", "mongodb"), score=0.0,
+            file_name=hit.get("file_name"), page_number=hit.get("page_number"),
+        )
+
     async def list_indexed_documents(
         self,
         limit: int = 200,

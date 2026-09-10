@@ -1,178 +1,30 @@
+"""Contrats du parcours RAG borné, sans MongoDB, Redis ou appel fournisseur."""
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-try:
-    import langgraph  # noqa: F401
-    import loguru  # noqa: F401
-except ModuleNotFoundError as exc:
-    raise unittest.SkipTest(f"Backend dependencies are not installed: {exc.name}")
-
-from app.agents.context_compression_agent import ContextCompressionAgent
-from app.agents.corrective_rag_agent import CorrectiveRAGAgent
-from app.agents.citation_validator_agent import CitationValidatorAgent
-from app.agents.final_answer_agent import FinalAnswerAgent
 from app.agents.hybrid_retriever_agent import HybridRetrieverAgent
-from app.agents.llm_critic_agent import LLMCriticAgent
-from app.agents.llm_planner_agent import LLMPlannerAgent
-from app.agents.memory_agent import MemoryAgent
-from app.agents.rag_agent import RAGAgent
 from app.agents.reranker_agent import RerankerAgent
-from app.agents.safety_guard_agent import SafetyGuardAgent
-from app.agents.search_agent import SearchAgent
-from app.agents.summary_agent import SummaryAgent
-from app.agents.tool_router_agent import ToolRouterAgent
-from app.agents.tool_executor_agent import ToolExecutorAgent
-from app.models.chat_models import (
-    ChatRequest,
-    CorrectiveRAGReview,
-    CriticReview,
-    PlannerDecision,
-    SafetyReview,
-    SearchResult,
-)
-from app.state import GraphState
+from app.models.chat_models import ChatRequest, ChatMessage, SearchResult
 from app.workflows.chat_workflow import ChatWorkflow
-from app.tools import CalculatorTool, CitationValidatorTool, DocumentListTool
+from app.workflows.routing import select_route
 
 
 class FakeSearchService:
-    index_name = "test-index"
+    index_name = 'test-index'
     collection = None
 
-    async def search(self, query: str, owner_id: str | None = None):
-        if query == "state graph agent orchestration":
-            return [
-                SearchResult(
-                    title="LangGraph corrected overview",
-                    snippet="A state graph can orchestrate agent execution with explicit edges.",
-                    score=1.0,
-                    source="test",
-                    page_number=2,
-                    file_name="guide.pdf",
-                )
-            ]
-        return [
-            SearchResult(
-                title="LangGraph overview",
-                snippet="LangGraph orchestrates stateful multi-agent workflows.",
-                score=1.0,
-                source="test",
-                page_number=1,
-                file_name="guide.pdf",
-            )
-        ]
+    def __init__(self):
+        self.search_calls = []
+        self.results = [SearchResult(title='LangGraph overview', snippet='LangGraph orchestrates stateful workflows.',
+                                     score=1, source='test', page_number=1, file_name='guide.pdf')]
 
-    async def list_indexed_documents(self, limit: int = 200, owner_id: str | None = None):
-        return [
-            {
-                "title": "LangGraph overview",
-                "file_name": "guide.pdf",
-                "page_number": 1,
-                "source": "test",
-            }
-        ]
+    async def search(self, query, owner_id=None):
+        self.search_calls.append((query, owner_id))
+        return self.results
 
-
-class FakeLLMService:
-    async def plan(self, user_message: str, conversation_history: str = ""):
-        lowered = user_message.lower().strip()
-        if lowered in {"hello", "hi", "bonjour"}:
-            return PlannerDecision(
-                intent="greeting",
-                requires_retrieval=False,
-                requires_rag=False,
-                steps=["load_memory", "greeting", "critic_review", "safety_review", "final_answer"],
-                tools=["memory", "critic", "safety"],
-                reason="mock greeting",
-            )
-        if "2 + 2" in lowered:
-            return PlannerDecision(
-                intent="calculation",
-                steps=["load_memory", "calculate", "critic_review", "safety_review", "final_answer"],
-                tools=["memory", "calculator", "critic", "safety"],
-                reason="mock calculation",
-            )
-        if "list indexed documents" in lowered:
-            return PlannerDecision(
-                intent="document_list",
-                steps=["load_memory", "list_documents", "critic_review", "safety_review", "final_answer"],
-                tools=["memory", "document_list", "critic", "safety"],
-                reason="mock document list",
-            )
-        return PlannerDecision(
-            intent="document_qa",
-            requires_retrieval=True,
-            requires_rag=True,
-            steps=["load_memory", "search_documents", "rerank_results", "generate_grounded_answer", "critic_review", "safety_review", "final_answer"],
-            tools=["memory", "search", "reranker", "corrective_rag", "rag", "critic", "safety"],
-            reason="mock document qa",
-        )
-
-    async def summarize(self, text: str, context=""):
-        return "Direct answer from summary agent."
-
-    async def grounded_answer(self, question: str, retrieved_documents: str, conversation_history: str = ""):
-        return "LangGraph coordinates agents through a compiled state graph [1]."
-
-    async def corrective_rag_review(self, user_message: str, documents: str):
-        if "LangGraph corrected overview" in documents:
-            return CorrectiveRAGReview(
-                decision="accept",
-                confidence=0.9,
-                grades=[
-                    {
-                        "label": "1",
-                        "verdict": "relevant",
-                        "relevance_score": 0.9,
-                        "reason": "The corrected result directly matches the query.",
-                    }
-                ],
-                feedback="Corrected retrieval is sufficient.",
-            )
-        if "Weak retrieval" in user_message:
-            return CorrectiveRAGReview(
-                decision="rewrite",
-                confidence=0.4,
-                rewritten_query="state graph agent orchestration",
-                grades=[
-                    {
-                        "label": "1",
-                        "verdict": "ambiguous",
-                        "relevance_score": 0.3,
-                        "reason": "The initial result is too broad.",
-                    }
-                ],
-                feedback="Rewrite the query for more precise retrieval.",
-            )
-        return CorrectiveRAGReview(
-            decision="accept",
-            confidence=0.9,
-            grades=[
-                {
-                    "label": "1",
-                    "verdict": "relevant",
-                    "relevance_score": 0.9,
-                    "reason": "The document directly answers the question.",
-                }
-            ],
-            feedback="Context is sufficient.",
-        )
-
-    async def critic_review(self, user_message: str, draft_answer: str, sources: str = ""):
-        return CriticReview(
-            passed=True,
-            score=0.95,
-            groundedness_score=0.9,
-            relevance_score=1.0,
-            clarity_score=0.95,
-            recommendation="accept",
-            feedback="Mock critic accepted.",
-        )
-
-    async def safety_review(self, answer: str):
-        return SafetyReview(passed=True, feedback="Mock safety accepted.")
-
-    async def compress_context(self, user_message: str, documents: str, max_chars: int = 4000):
-        return documents[:max_chars]
+    async def list_indexed_documents(self, limit=200, owner_id=None):
+        return [{'title': 'Guide', 'file_name': 'guide.pdf', 'page_number': 1, 'source': 'test'}]
 
 
 class FakeMemoryService:
@@ -184,161 +36,192 @@ class FakeMemoryService:
         return self.messages.get((owner_id, conversation_id), [])
 
     async def append_message(self, conversation_id, role, content, owner_id=None):
-        self.messages.setdefault((owner_id, conversation_id), []).append({"role": role, "content": content})
-
-    async def get_value(self, key):
-        return self.values.get(key)
-
-    async def set_value(self, key, value, ttl=None):
-        self.values[key] = value
+        self.messages.setdefault((owner_id, conversation_id), []).append({'role': role, 'content': content})
 
 
 class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
-    def build_workflow(self) -> ChatWorkflow:
-        memory_service = FakeMemoryService()
-        workflow = ChatWorkflow(
-            memory_service=memory_service,
-            cache_service=memory_service,
-            search_service=FakeSearchService(),
-            llm_service=FakeLLMService(),
+    def build_workflow(self):
+        llm = SimpleNamespace(
+            grounded_answer=AsyncMock(return_value='LangGraph orchestrates workflows [1].'),
+            summarize=AsyncMock(return_value='A general answer.'),
+            plan=AsyncMock(side_effect=AssertionError('No online LLM planner')),
+            critic_review=AsyncMock(side_effect=AssertionError('No online LLM critic')),
+            corrective_rag_review=AsyncMock(side_effect=AssertionError('No online CRAG')),
         )
-        workflow.memory_agent = MemoryAgent(workflow.memory_service)
-        workflow.planner_agent = LLMPlannerAgent(workflow.llm_service)
-        workflow.tool_router_agent = ToolRouterAgent()
-        workflow.tool_executor_agent = ToolExecutorAgent(
-            CalculatorTool(), DocumentListTool(workflow.search_service)
-        )
-        workflow.summary_agent = SummaryAgent(workflow.llm_service)
-        workflow.search_agent = SearchAgent(workflow.search_service)
-        workflow.hybrid_retriever_agent = HybridRetrieverAgent()
-        workflow.reranker_agent = RerankerAgent()
-        workflow.corrective_rag_agent = CorrectiveRAGAgent(workflow.llm_service)
-        workflow.context_compression_agent = ContextCompressionAgent(workflow.llm_service)
-        workflow.rag_agent = RAGAgent(workflow.llm_service)
-        workflow.citation_validator_agent = CitationValidatorAgent(CitationValidatorTool())
-        workflow.critic_agent = LLMCriticAgent(workflow.llm_service)
-        workflow.safety_guard_agent = SafetyGuardAgent(workflow.llm_service)
-        workflow.final_answer_agent = FinalAnswerAgent()
-        workflow.graph = workflow._build_graph()
+        workflow = ChatWorkflow(memory_service=FakeMemoryService(), search_service=FakeSearchService(),
+                                llm_service=llm, embedding_service=SimpleNamespace(), strategy="baseline")
+        workflow.retrieval.hybrid = HybridRetrieverAgent()
+        workflow.retrieval.reranker = RerankerAgent()
         return workflow
 
-    async def test_graph_compiles(self):
+    def test_graph_has_five_business_steps_without_cycles(self):
         workflow = self.build_workflow()
-        self.assertIsNotNone(workflow.graph)
+        graph = workflow.graph.get_graph()
+        self.assertEqual(set(graph.nodes) - {'__start__', '__end__'}, {'route', 'retrieve', 'answer', 'validate', 'finalize'})
+        order = {'__start__': 0, 'route': 1, 'retrieve': 2, 'answer': 3, 'validate': 4, 'finalize': 5, '__end__': 6}
+        self.assertTrue(all(order[edge.source] < order[edge.target] for edge in graph.edges))
 
-    async def test_agents_can_be_called(self):
-        state = GraphState(conversation_id="test", user_message="How does LangGraph work?")
-        state.route = "rag"
-
-        for agent in [
-            LLMPlannerAgent(FakeLLMService()),
-            ToolRouterAgent(),
-            ToolExecutorAgent(CalculatorTool(), DocumentListTool(FakeSearchService())),
-            SearchAgent(FakeSearchService()),
-            HybridRetrieverAgent(),
-            RerankerAgent(),
-            CorrectiveRAGAgent(),
-            ContextCompressionAgent(FakeLLMService()),
-            RAGAgent(FakeLLMService()),
-            CitationValidatorAgent(CitationValidatorTool()),
-            LLMCriticAgent(FakeLLMService()),
-            SafetyGuardAgent(FakeLLMService()),
-            FinalAnswerAgent(),
-        ]:
-            result = await agent.run(state)
-            self.assertTrue(result.agent)
-            self.assertIsInstance(result.output, str)
-
-    async def test_greeting_uses_greeting_route(self):
+    async def test_document_question_uses_one_generation_and_local_validation(self):
         workflow = self.build_workflow()
-        response = await workflow.run(ChatRequest(message="hello"))
-
-        self.assertEqual(response.route, "greeting")
-        self.assertIn("greeting", response.agents_used)
+        response = await workflow.run(ChatRequest(message='Comment fonctionne LangGraph ?'), user_id='alice')
+        self.assertEqual(response.route, 'rag')
         self.assertTrue(response.critic_passed)
-        self.assertTrue(response.safety_passed)
+        self.assertIsNone(response.critic_score)
+        self.assertEqual(response.evaluation['critic']['source'], 'local')
+        self.assertFalse(response.evaluation['critic']['factuality_evaluated'])
+        self.assertEqual(response.evaluation['answer']['status'], 'answered')
+        self.assertEqual(response.plan, ['route', 'retrieve', 'answer', 'validate', 'finalize'])
+        self.assertEqual(workflow.llm_service.grounded_answer.await_count, 1)
+        for name in ('plan', 'critic_review', 'corrective_rag_review'):
+            getattr(workflow.llm_service, name).assert_not_awaited()
+        self.assertEqual(workflow.search_service.search_calls, [('Comment fonctionne LangGraph ?', 'alice')])
+        self.assertIn('Sources:', response.answer)
+        self.assertIn('citation_validator', response.agents_used)
 
-    async def test_document_question_uses_search_rag_and_critic(self):
+    async def test_greeting_without_network_generation(self):
         workflow = self.build_workflow()
-        response = await workflow.run(ChatRequest(message="How does LangGraph work?"))
-
-        self.assertEqual(response.route, "rag")
-        self.assertIn("search", response.agents_used)
-        self.assertIn("reranker", response.agents_used)
-        self.assertIn("corrective_rag", response.agents_used)
-        self.assertIn("rag", response.agents_used)
-        self.assertIn("citation_validator", response.agents_used)
-        self.assertIn("critic", response.agents_used)
-        self.assertIn("safety", response.agents_used)
-        self.assertIn("final_answer", response.agents_used)
+        response = await workflow.run(ChatRequest(message='Bonjour !'))
+        self.assertEqual(response.route, 'greeting')
         self.assertTrue(response.critic_passed)
-        self.assertTrue(response.plan)
-        self.assertTrue(response.retrieval_metrics)
-        self.assertTrue(response.tool_results)
+        self.assertEqual(workflow.search_service.search_calls, [])
+        workflow.llm_service.grounded_answer.assert_not_awaited()
+        workflow.llm_service.summarize.assert_not_awaited()
+
+    async def test_calculation_without_llm(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message='Calcule 2 + 2'))
+        self.assertEqual(response.route, 'calculation')
+        self.assertEqual(response.answer, '2 + 2 = 4')
+        self.assertTrue(response.critic_passed)
+        workflow.llm_service.grounded_answer.assert_not_awaited()
+
+    async def test_failed_calculation_is_not_success(self):
+        response = await self.build_workflow().run(ChatRequest(message='Calcule 2 / 0'))
+        self.assertFalse(response.critic_passed)
+        self.assertIn('Calcul impossible', response.answer)
+        self.assertEqual(response.evaluation['answer']['status'], 'abstained')
+
+    async def test_inventory_uses_tool(self):
+        response = await self.build_workflow().run(ChatRequest(message='Liste les documents indexés'))
+        self.assertEqual(response.route, 'document_list')
+        self.assertIn('guide.pdf', response.answer)
+        self.assertTrue(response.critic_passed)
+
+    async def test_invalid_citation_abstains_without_retry(self):
+        workflow = self.build_workflow()
+        workflow.llm_service.grounded_answer.return_value = 'UNSUPPORTED CLAIM [99].'
+        response = await workflow.run(ChatRequest(message='Question documentaire'))
+        self.assertFalse(response.critic_passed)
+        self.assertEqual(response.evaluation['answer']['status'], 'abstained')
+        self.assertNotIn('UNSUPPORTED CLAIM', response.answer)
+        self.assertEqual(workflow.llm_service.grounded_answer.await_count, 1)
+
+    async def test_missing_citations_abstains(self):
+        workflow = self.build_workflow()
+        workflow.llm_service.grounded_answer.return_value = 'Uncited claim.'
+        response = await workflow.run(ChatRequest(message='Question documentaire'))
+        self.assertFalse(response.critic_passed)
+        self.assertNotIn('Uncited claim', response.answer)
+
+    async def test_no_documents_abstains_without_generation(self):
+        workflow = self.build_workflow()
+        workflow.search_service.results = []
+        response = await workflow.run(ChatRequest(message='Question inconnue'))
+        workflow.llm_service.grounded_answer.assert_not_awaited()
+        self.assertFalse(response.critic_passed)
+        self.assertEqual(response.evaluation['answer']['reason'], 'no_documents')
+
+    async def test_generation_failure_does_not_publish_raw_search(self):
+        workflow = self.build_workflow()
+        workflow.llm_service.grounded_answer.side_effect = RuntimeError('provider down')
+        response = await workflow.run(ChatRequest(message='Question documentaire'))
+        self.assertEqual(workflow.llm_service.grounded_answer.await_count, 1)
+        self.assertEqual(response.evaluation['answer']['reason'], 'llm_unavailable')
+        self.assertNotIn('LangGraph orchestrates', response.answer)
+
+    async def test_general_mode_does_not_claim_document_sources(self):
+        workflow = self.build_workflow()
+        response = await workflow.run(ChatRequest(message='Explain Redis', mode='general'))
+        self.assertEqual(response.route, 'direct_answer')
+        self.assertEqual(workflow.search_service.search_calls, [])
+        self.assertEqual(workflow.llm_service.summarize.await_count, 1)
+        self.assertNotIn('Sources:', response.answer)
+
+    async def test_general_failure_is_explicit(self):
+        workflow = self.build_workflow()
+        workflow.llm_service.summarize.side_effect = RuntimeError('provider down')
+        response = await workflow.run(ChatRequest(message='hello', mode='general'))
+        self.assertFalse(response.critic_passed)
+        self.assertEqual(response.evaluation['answer']['reason'], 'llm_unavailable')
+
+    async def test_current_message_is_not_duplicated_in_history(self):
+        workflow = self.build_workflow()
+        await workflow.run(ChatRequest(message='First question', conversation_id='same'))
+        self.assertEqual(workflow.llm_service.grounded_answer.call_args.kwargs['conversation_history'], '')
+        await workflow.run(ChatRequest(message='Second question', conversation_id='same'))
+        context = workflow.llm_service.grounded_answer.call_args.kwargs['conversation_history']
+        self.assertIn('First question', context)
+        self.assertNotIn('Second question', context)
 
     async def test_repeated_question_reexecutes_with_current_history(self):
-        from app.models.chat_models import ChatMessage
         workflow = self.build_workflow()
-        first = await workflow.run(ChatRequest(message="hello", conversation_id="same"))
-        second = await workflow.run(ChatRequest(message="hello", conversation_id="same", history=[ChatMessage(role="user", content="New context")]))
-        self.assertFalse(first.cached)
-        self.assertFalse(second.cached)
-        self.assertEqual(second.route, "greeting")
-        self.assertEqual(second.context_messages, 4)
-        self.assertEqual(workflow.memory_service.values, {})
+        await workflow.run(ChatRequest(message='Question', conversation_id='same'))
+        response = await workflow.run(ChatRequest(message='Question', conversation_id='same', history=[ChatMessage(role='user', content='New context')]))
+        self.assertFalse(response.cached)
+        self.assertEqual(response.context_messages, 4)
+        self.assertEqual(workflow.llm_service.grounded_answer.await_count, 2)
+        self.assertIn('New context', workflow.llm_service.grounded_answer.call_args.kwargs['conversation_history'])
 
-    async def test_corrective_rag_can_rewrite_and_retry_retrieval(self):
+    async def test_history_is_scoped_by_owner(self):
         workflow = self.build_workflow()
-        response = await workflow.run(ChatRequest(message="Weak retrieval question about agents"))
+        await workflow.run(ChatRequest(message='Alice private question', conversation_id='same'), user_id='alice')
+        await workflow.run(ChatRequest(message='Bob question', conversation_id='same'), user_id='bob')
+        self.assertNotIn('Alice', workflow.llm_service.grounded_answer.call_args.kwargs['conversation_history'])
 
-        self.assertEqual(response.route, "rag")
-        self.assertIn("corrective_rag", response.agents_used)
-        self.assertIn("retrieval_retry", response.agents_used)
-        self.assertIn("rag", response.agents_used)
-        self.assertEqual(
-            response.retrieval_metrics["corrective_rag"]["decision"],
-            "accept",
-        )
-
-    async def test_calculation_uses_safe_tool_route(self):
+    async def test_final_answer_redacts_secrets(self):
         workflow = self.build_workflow()
-        response = await workflow.run(ChatRequest(message="Calculate 2 + 2"))
+        workflow.llm_service.summarize.return_value = 'api_key=abcdef1234567890'
+        response = await workflow.run(ChatRequest(message='q', mode='general'))
+        self.assertIn('[REDACTED_SECRET]', response.answer)
+        self.assertNotIn('abcdef1234567890', response.answer)
+        self.assertFalse(response.safety_passed)
 
-        self.assertEqual(response.route, "calculation")
-        self.assertEqual(response.answer.splitlines()[0], "2 + 2 = 4")
-        self.assertEqual(response.tool_results[0].tool, "calculator")
-        self.assertTrue(response.tool_results[0].success)
+    def test_document_requests_are_not_misrouted_by_keywords_or_dates(self):
+        for message in ('Quel est le plan de maintenance du document ?', 'Corrige la procédure selon le PDF',
+                        'Summarize the indexed documents', 'Summarize my documents: what changed?', 'Que dit le rapport du 2026-09-10 ?',
+                        'Le document indique 2 + 2, explique pourquoi', 'Résume Redis caching'):
+            with self.subTest(message=message):
+                self.assertEqual(select_route(message), 'rag')
 
-    async def test_document_list_uses_inventory_tool(self):
+    def test_explicit_modes_and_pasted_text(self):
+        self.assertEqual(select_route('Résume ceci: un texte fourni'), 'direct_answer')
+        self.assertEqual(select_route('hello', 'documents'), 'rag')
+        self.assertEqual(select_route('Documents', 'general'), 'direct_answer')
+        self.assertEqual(select_route('Calcule 20 % de 150'), 'calculation')
+
+    async def test_expected_abstention_is_an_evaluation_success(self):
+        from app.evaluation.metrics import score_response
         workflow = self.build_workflow()
-        response = await workflow.run(ChatRequest(message="List indexed documents"))
+        workflow.search_service.results = []
+        response = await workflow.run(ChatRequest(message='Question inconnue'))
+        self.assertTrue(score_response(response, 'rag', expected_status='abstained')['passed'])
+        self.assertFalse(score_response(response, 'rag', expected_status='answered')['passed'])
 
-        self.assertEqual(response.route, "document_list")
-        self.assertIn("guide.pdf", response.answer)
-        self.assertEqual(response.tool_results[0].tool, "document_list")
-
-    async def test_direct_answer_rejection_routes_to_one_summary_retry(self):
+    async def test_search_failure_can_still_use_vector_evidence(self):
         workflow = self.build_workflow()
-        route = workflow._route_after_critic(
-            {
-                "route": "direct_answer",
-                "critic_passed": False,
-                "correction_attempted": False,
-            }
-        )
-        self.assertEqual(route, "retry_summary")
+        workflow.search_service.search = AsyncMock(side_effect=RuntimeError('Atlas Search unavailable'))
+        vector_store = SimpleNamespace(similarity_search=AsyncMock(return_value=workflow.search_service.results))
+        workflow.retrieval.hybrid = HybridRetrieverAgent(vector_store)
+        response = await workflow.run(ChatRequest(message='Question documentaire'))
+        self.assertTrue(response.critic_passed)
+        self.assertIn('search_error', response.retrieval_metrics)
+        self.assertEqual(workflow.llm_service.grounded_answer.await_count, 1)
 
-    async def test_safety_redacts_secrets(self):
-        state = GraphState(
-            conversation_id="test",
-            user_message="return secret",
-            draft_answer="api_key=abcdef1234567890",
-        )
-        result = await SafetyGuardAgent(FakeLLMService()).run(state)
-        self.assertEqual(result.agent, "safety")
-        self.assertFalse(state.safety_passed)
-        self.assertIn("[REDACTED_SECRET]", state.final_answer)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    async def test_retrieval_outage_is_not_reported_as_an_empty_corpus(self):
+        workflow = self.build_workflow()
+        workflow.search_service.search = AsyncMock(side_effect=RuntimeError('text down'))
+        workflow.retrieval.hybrid = HybridRetrieverAgent(SimpleNamespace(similarity_search=AsyncMock(side_effect=RuntimeError('vector down'))))
+        response = await workflow.run(ChatRequest(message='Question documentaire'))
+        self.assertEqual(response.evaluation['answer']['reason'], 'retrieval_unavailable')
+        self.assertIn('recherche documentaire est indisponible', response.answer)
+        workflow.llm_service.grounded_answer.assert_not_awaited()

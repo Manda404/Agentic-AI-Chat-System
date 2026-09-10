@@ -18,6 +18,10 @@ services:
         sync: false
       - key: HUGGINGFACE_API_KEY
         sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DOCUMENTARY_AGENT_TIMEOUT_SECONDS
+        value: "90"
       - key: MODEL_SUMMARIZATION
         value: deepseek-ai/DeepSeek-V4-Pro
       - key: MODEL_CODE_GENERATION

@@ -20,7 +20,6 @@ class ApplicationServices:
         self.auth = AuthService(self.memory)
         self.workflow = ChatWorkflow(
             memory_service=self.memory,
-            cache_service=self.memory,
             search_service=self.search,
             llm_service=self.llm,
             embedding_service=self.embedding,

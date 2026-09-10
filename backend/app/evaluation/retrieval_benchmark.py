@@ -42,7 +42,7 @@ from app.config.settings import settings
 from app.evaluation.retrieval_cases import GOLD_RETRIEVAL_CASES, RetrievalGoldCase
 from app.evaluation.retrieval_metrics import mean, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank
 from app.services.embedding_service import HuggingFaceEmbeddingService
-from app.services.mongo_vector_store import MongoVectorStore
+from app.services.retrieval_pipeline import RetrievalPipeline
 from app.services.search_service import SearchService
 from app.state import GraphState
 
@@ -68,14 +68,8 @@ def _build_pipeline() -> tuple[SearchService, HybridRetrieverAgent, RerankerAgen
     """Instancie les agents avec EXACTEMENT le même câblage que `ChatWorkflow.__init__`."""
     search_service = SearchService()
     embedding_service = HuggingFaceEmbeddingService()
-    hybrid_agent = HybridRetrieverAgent(
-        vector_store=MongoVectorStore(search_service, embedding_service)
-    )
-    reranker_agent = RerankerAgent(
-        max_results=settings.max_rag_documents,
-        embedding_service=embedding_service if settings.semantic_reranker_enabled else None,
-    )
-    return search_service, hybrid_agent, reranker_agent
+    pipeline = RetrievalPipeline(search_service, embedding_service)
+    return search_service, pipeline.hybrid, pipeline.reranker
 
 
 async def _run_case(

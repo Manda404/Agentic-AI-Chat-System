@@ -82,7 +82,7 @@ class PipelineRegressions(unittest.IsolatedAsyncioTestCase):
             responses = []
             for _ in range(2):
                 upload = UploadFile(filename='guide.pdf', file=io.BytesIO(b'pdf'))
-                responses.append(await ingest_uploaded_file(upload, user, search, embedding, memory))
+                responses.append(await ingest_uploaded_file(upload, user, search, embedding))
                 await upload.close()
         self.assertEqual(ids[0], ids[1])
         self.assertNotEqual(responses[0].stored_path, responses[1].stored_path)
@@ -195,10 +195,12 @@ class PipelineRegressions(unittest.IsolatedAsyncioTestCase):
         await CitationValidatorAgent(CitationValidatorTool()).run(state)
         self.assertFalse(state.evaluation['citation_validation']['passed'])
 
-    def test_no_rag_retry_after_crag_rejects_all_evidence(self):
-        workflow = ChatWorkflow.__new__(ChatWorkflow)
-        route = workflow._route_after_critic({'route': 'rag', 'critic_passed': False, 'search_results': [document()], 'retrieval_metrics': {'corrective_rag': {'decision': 'fallback'}}})
-        self.assertNotEqual(route, 'retry_rag')
+    async def test_rejected_evidence_is_not_published(self):
+        from app.agents.final_answer_agent import FinalAnswerAgent
+        state = GraphState('id', 'q', route='rag', draft_answer='UNSUPPORTED CLAIM', critic_passed=False)
+        await FinalAnswerAgent().run(state)
+        self.assertNotIn('UNSUPPORTED CLAIM', state.final_answer)
+        self.assertEqual(state.evaluation['answer']['status'], 'abstained')
 
     def test_metrics_do_not_count_duplicate_relevance(self):
         retrieved = ['A', 'A', 'B']
