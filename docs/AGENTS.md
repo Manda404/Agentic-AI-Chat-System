@@ -1,5 +1,7 @@
 # Agents et graphe LangGraph
 
+> Mise à jour du 10 septembre 2026 : consulter [l’audit et les corrections](AUDIT_2026-09-10.md) pour les contrats actuels d’ingestion, sélection des sources, cache, retries et évaluation. Les descriptions historiques ci-dessous doivent être lues avec ces changements.
+
 > Contrats vérifiés contre `backend/app/agents/`, `backend/app/state/` et
 > `backend/app/workflows/chat_workflow.py` le **30 août 2026**.
 

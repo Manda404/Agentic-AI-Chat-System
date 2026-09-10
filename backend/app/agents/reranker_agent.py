@@ -44,11 +44,12 @@ class RerankerAgent:
         de la question apparaissent dans le titre ou le snippet, et une
         similarité sémantique (embeddings) si disponible.
         """
-        query_terms = self._terms(state.user_message)
+        query = state.metadata.get("retrieval_query") or state.user_message
+        query_terms = self._terms(query)
         candidates = [item for item in state.search_results if item.score >= self.min_score]
         lexical_scores = [self._lexical_score(item, query_terms) for item in candidates]
 
-        semantic_scores, semantic_used = await self._semantic_scores(state.user_message, candidates)
+        semantic_scores, semantic_used = await self._semantic_scores(query, candidates)
 
         scored = [
             (lexical + (semantic_scores[i] * SEMANTIC_WEIGHT if semantic_scores else 0.0), item)
@@ -120,6 +121,8 @@ class RerankerAgent:
 
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
         """Similarité cosinus pure Python, sans dépendance numpy."""
+        if not a or len(a) != len(b):
+            raise ValueError("Incompatible embedding dimensions; re-ingest with the configured model.")
         dot = sum(x * y for x, y in zip(a, b))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(y * y for y in b))

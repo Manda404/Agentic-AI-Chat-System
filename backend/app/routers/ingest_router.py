@@ -19,12 +19,11 @@ Toutes ces routes nécessitent un utilisateur authentifié.
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 import asyncio
-import hashlib
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 from uuid import uuid4
 from app.config.settings import settings
+from app.data_ingest.document_processing import stable_document_id, with_document_id, text_chunks
 from app.data_ingest.file_ingest import (
     detect_file_type,
     load_documents_from_directory,
@@ -92,10 +91,8 @@ def _resolve_batch_directory(directory_path: str) -> Path:
 def _available_upload_path(filename: str) -> Path:
     """Construit un chemin sûr sans écraser un document déjà enregistré."""
     safe_name = Path(filename).name
-    destination = UPLOAD_DIRECTORY / safe_name
-    if destination.exists():
-        destination = UPLOAD_DIRECTORY / f"{destination.stem}-{uuid4().hex[:8]}{destination.suffix}"
-    return destination
+    return UPLOAD_DIRECTORY / f"{uuid4().hex}-{safe_name}"
+
 
 
 def _persist_upload(source, destination: Path, max_bytes: int) -> None:
@@ -136,30 +133,12 @@ def _clean_text(value: Any, limit: int | None = None) -> str:
     return text
 
 
-def _stable_document_id(document: Dict[str, Any]) -> str:
-    """Construit un identifiant stable pour éviter les doublons à la réingestion."""
-    identity_owner = (
-        _clean_text(document.get("owner_id")).lower()
-        if document.get("visibility") == "private"
-        else ""
-    )
-    identity = "|".join(
-        [identity_owner]
-        + [
-            str(document.get(key, "") or "").strip()
-            for key in ("source", "file_name", "page_number", "title", "snippet")
-        ]
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+# Alias conservé pour les appelants existants ; une seule règle d'identité.
+_stable_document_id = stable_document_id
 
 
 def _attach_document_ids(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ajoute `document_id` et `_id` MongoDB déterministes à chaque document."""
-    for document in documents:
-        document_id = str(document.get("document_id") or _stable_document_id(document))
-        document["document_id"] = document_id
-        document["_id"] = document_id
-    return documents
+    return [with_document_id(document) for document in documents]
 
 
 def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List[Dict[str, Any]]:
@@ -168,14 +147,18 @@ def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List
     for document in documents:
         item = dict(document)
         item["title"] = _clean_text(item.get("title") or item.get("file_name") or "Untitled", 300)
-        item["snippet"] = _clean_text(item.get("snippet"), settings.max_ingested_snippet_chars)
+        item["snippet"] = _clean_text(item.get("snippet"))
         item["category"] = _clean_text(item.get("category") or "document", 120)
         item["source"] = _clean_text(item.get("source") or "ingest", 300)
         item["file_name"] = _clean_text(item.get("file_name"), 300) or None
         item["owner_id"] = owner_id
         item["visibility"] = settings.document_default_visibility
-        if item["snippet"]:
-            normalized.append(item)
+        for index, chunk in enumerate(text_chunks(item["snippet"], settings.max_ingested_snippet_chars)):
+            fragment = {**item, "snippet": chunk, "chunk_index": index}
+            # Les identifiants fournis au parseur ne doivent pas écraser les fragments.
+            fragment.pop("_id", None)
+            fragment.pop("document_id", None)
+            normalized.append(fragment)
     return normalized
 
 
@@ -200,6 +183,8 @@ async def _prepare_documents(
     """Normalise, limite, vectorise, puis ajoute les identifiants stables."""
     normalized = _normalize_documents(documents, owner_id=owner_id)
     _enforce_document_limit(normalized, source_label)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="No extractable text found. Scanned PDFs require OCR.")
     return _attach_document_ids(await _attach_embeddings(normalized, embedding_service))
 
 
@@ -226,6 +211,8 @@ async def _attach_embeddings(
     texts = [f"{document.get('title', '')}. {document.get('snippet', '')}" for document in documents]
     try:
         embeddings = await embedding_service.embed_texts(texts)
+        from app.services.embedding_service import validate_embeddings
+        validate_embeddings(embeddings, len(documents), settings.embedding_dimensions)
     except Exception as exc:
         logger.bind(reason=str(exc), document_count=len(documents)).warning(
             "Embedding computation failed; indexing documents without vectors."
@@ -233,7 +220,17 @@ async def _attach_embeddings(
         return documents
     for document, embedding in zip(documents, embeddings):
         document["embedding"] = embedding
+        document["embedding_model"] = settings.embedding_model
     return documents
+
+
+def _embedding_summary(documents: list[dict]) -> dict:
+    embedded_count = sum(bool(item.get("embedding")) for item in documents)
+    return {
+        "embedded_count": embedded_count,
+        "warnings": (["Vector indexing incomplete; documents are available for full-text indexing only until re-ingested."]
+                     if embedded_count < len(documents) else []),
+    }
 
 
 @router.delete("/data/reset", response_model=DataResetResponse)
@@ -276,7 +273,7 @@ async def ingest_sample_data(
     """Charge et indexe le CSV d'exemple `backend/data/ai_tooling_catalog.csv`."""
     logger.bind(user_id=current_user.email).info("Sample ingest requested.")
     try:
-        documents = await asyncio.to_thread(load_documents_from_csv, "data/ai_tooling_catalog.csv")
+        documents = await asyncio.to_thread(load_documents_from_csv, str(BACKEND_ROOT / "data/ai_tooling_catalog.csv"))
         logger.bind(user_id=current_user.email, document_count=len(documents)).info(
             "CSV documents loaded for ingest."
         )
@@ -296,6 +293,7 @@ async def ingest_sample_data(
             indexed_count=indexed_count,
             index_name=settings.mongodb_collection,
             source_file="data/ai_tooling_catalog.csv",
+            **_embedding_summary(documents),
         )
     except HTTPException:
         raise
@@ -333,6 +331,13 @@ async def ingest_uploaded_file(
         )
 
         documents = await asyncio.to_thread(load_documents_from_file, str(destination), file_type)
+        # Le nom physique aléatoire protège le stockage, sans modifier l'identité logique.
+        original_stem = Path(file.filename).stem
+        for document in documents:
+            document["file_name"] = Path(file.filename).name
+            if file_type == "pdf":
+                document["title"] = f"{original_stem} - Page {document['page_number']}"
+                document["source"] = f"pdf-ingest:{original_stem}"
 
         logger.bind(user_id=current_user.email, document_count=len(documents)).info(
             f"Loaded {len(documents)} documents from {file.filename}"
@@ -359,6 +364,7 @@ async def ingest_uploaded_file(
             file_type=file_type,
             documents_processed=len(documents),
             stored_path=str(destination.relative_to(BACKEND_ROOT)),
+            **_embedding_summary(documents),
         )
 
     except HTTPException:
@@ -387,11 +393,13 @@ async def ingest_batch_from_directory(
 
     try:
         file_types_list = request.file_types if request.file_types else None
+        parse_errors: list[str] = []
         results = await asyncio.to_thread(
             load_documents_from_directory,
             str(directory_path),
             file_types_list,  # type: ignore[arg-type]
             request.recursive,
+            parse_errors,
         )
         if len(results) > settings.max_batch_files:
             raise HTTPException(
@@ -417,11 +425,11 @@ async def ingest_batch_from_directory(
                 total_documents_indexed=0,
                 index_name=settings.mongodb_collection,
                 files_summary=[],
-                errors=["No files found in the specified directory"]
+                errors=parse_errors or ["No files found in the specified directory"]
             )
 
         files_summary = []
-        errors = []
+        errors = list(parse_errors)
         total_indexed = 0
 
         for file_path, documents in results.items():
@@ -439,7 +447,8 @@ async def ingest_batch_from_directory(
                     "file_path": file_path,
                     "documents_processed": len(documents),
                     "documents_indexed": indexed_count,
-                    "status": "success"
+                    "status": "success",
+                    **_embedding_summary(documents),
                 })
 
                 logger.bind(user_id=current_user.email).info(
@@ -475,6 +484,8 @@ async def ingest_batch_from_directory(
 
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         logger.bind(user_id=current_user.email).error(
             f"Directory not found: {directory_path}"

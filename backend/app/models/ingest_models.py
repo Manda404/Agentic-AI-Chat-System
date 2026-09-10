@@ -6,13 +6,18 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-class IngestResponse(BaseModel):
+class EmbeddingSummary(BaseModel):
+    embedded_count: int = 0
+    warnings: List[str] = Field(default_factory=list)
+
+
+class IngestResponse(EmbeddingSummary):
     """Réponse de `POST /ingest/sample-data`."""
     indexed_count: int
     index_name: str
     source_file: str
 
-class FileIngestResponse(BaseModel):
+class FileIngestResponse(EmbeddingSummary):
     """Réponse de `POST /ingest/upload` (un seul fichier)."""
     indexed_count: int
     index_name: str

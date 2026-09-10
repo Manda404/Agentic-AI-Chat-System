@@ -1,5 +1,7 @@
 # Système RAG — ingestion, retrieval et génération
 
+> Mise à jour du 10 septembre 2026 : consulter [l’audit et les corrections](AUDIT_2026-09-10.md) pour les contrats actuels d’ingestion, sélection des sources, cache, retries et évaluation. Les descriptions historiques ci-dessous doivent être lues avec ces changements.
+
 > État vérifié contre le code le **30 août 2026**. Ce document distingue le
 > chemin nominal, les dégradations silencieuses et les limites de qualité.
 

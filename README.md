@@ -226,6 +226,8 @@ http://localhost:3000
 
 ## Documentation
 
+- [Audit du 10 septembre 2026 : défauts corrigés, mesures Atlas et prochaines étapes](docs/AUDIT_2026-09-10.md).
+
 Pour aller plus loin :
 
 - [Fonctionnement, pas à pas](docs/FONCTIONNEMENT.md) — comment marche le projet, du démarrage à la réponse, étape par étape.
@@ -236,6 +238,6 @@ Pour aller plus loin :
 
 ## Positionnement
 
-Ce projet est un **starter production-grade avancé** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
+Ce projet est un **prototype avancé de plateforme RAG** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
 
 Cette branche améliore plusieurs points critiques : ingestion idempotente avec IDs stables, fusion hybride RRF, réutilisation des embeddings au reranking, compression locale plus sélective, critic conditionnel mais imposé sur le RAG, contrôle d'accès documentaire configurable, limites d'ingestion, reset/batch administrables et rate limiting Redis avec fallback local. Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant, les rôles fins et l’évaluation continue restent des pistes d’évolution.

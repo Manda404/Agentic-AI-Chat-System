@@ -2,7 +2,7 @@
 Workflow LangGraph du chat multi-agent.
 
 `ChatWorkflow.run()` reste le point d'entrée appelé par `/api/v1/chat` :
-il gère le cache Redis et l'historique, puis délègue l'orchestration à un
+il gère l'historique Redis, puis délègue l'orchestration à un
 `StateGraph` composé de nœuds agents explicites.
 """
 
@@ -111,7 +111,7 @@ class ChatWorkflow:
 
     @observe(name="chat_workflow")
     async def run(self, request: ChatRequest, user_id: Optional[str] = None) -> ChatResponse:
-        """Traite un message : cache -> LangGraph -> mémoire/cache -> réponse API."""
+        """Traite un message avec son historique courant, puis mémorise la réponse."""
         conversation_id = request.conversation_id or str(uuid.uuid4())
         set_log_context(thread_id=conversation_id, agent_type="workflow")
         owner_scope = self._cache_owner_scope(user_id)
@@ -138,9 +138,6 @@ class ChatWorkflow:
                     safety_passed=False,
                     trace_id=conversation_id,
                 )
-            document_version = await self.cache_service.get_value("documents:version") or "0"
-            cache_key = f"chat:{owner_scope}:{conversation_id}:docs:{document_version}:{request.message.strip().lower()}"
-            cached_answer = await self.cache_service.get_value(cache_key)
 
             logger.bind(
                 conversation_id=conversation_id,
@@ -148,28 +145,6 @@ class ChatWorkflow:
                 history_count=len(request.history),
                 message_preview=request.message[:120],
             ).info("Chat workflow started.")
-
-            if cached_answer:
-                logger.bind(conversation_id=conversation_id).info("Cache hit for chat response.")
-                return ChatResponse(
-                    conversation_id=conversation_id,
-                    route="cache",
-                    answer=cached_answer,
-                    agents_used=["cache"],
-                    agent_results=[
-                        AgentResult(
-                            agent="cache",
-                            output=cached_answer,
-                            metadata={"cache_hit": True},
-                        )
-                    ],
-                    cached=True,
-                    context_messages=len(stored_context),
-                    critic_passed=True,
-                    safety_passed=True,
-                    evaluation={"cache": {"hit": True, "documents_version": document_version}},
-                    trace_id=conversation_id,
-                )
 
             await self.memory_service.append_message(conversation_id, "user", request.message, owner_id=user_id)
 
@@ -179,10 +154,10 @@ class ChatWorkflow:
                 history=request.history,
                 transaction_id=conversation_id,
                 metadata={"user_id": user_id} if user_id else {},
-                evaluation={"cache": {"hit": False, "documents_version": document_version}},
+                evaluation={"cache": {"hit": False, "disabled": "conversation_dependent_answers"}},
             )
             graph_config = (
-                {"configurable": {"thread_id": conversation_id}}
+                {"configurable": {"thread_id": f"{owner_scope}:{conversation_id}"}}
                 if settings.langgraph_checkpoint_enabled
                 else None
             )
@@ -191,7 +166,6 @@ class ChatWorkflow:
 
             answer = state.final_answer or "I could not produce an answer for this request."
             await self.memory_service.append_message(conversation_id, "assistant", answer, owner_id=user_id)
-            await self.cache_service.set_value(cache_key, answer)
 
             logger.bind(
                 conversation_id=conversation_id,
@@ -385,7 +359,8 @@ class ChatWorkflow:
                 fallback = self._fallback_result(node_name, exc, state)
                 state.record_result(fallback)
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
-            state.evaluation.setdefault("latency_ms", {})[node_name] = elapsed_ms
+            latencies = state.evaluation.setdefault("latency_ms", {})
+            latencies[node_name] = round(latencies.get(node_name, 0.0) + elapsed_ms, 2)
             logger.bind(
                 conversation_id=state.conversation_id,
                 node=node_name,
@@ -401,6 +376,7 @@ class ChatWorkflow:
         state.retrieval_correction_attempted = True
         state.search_results = []
         state.reranked_results = []
+        state.metadata.pop("context_document_count", None)
         state.compressed_context = None
         state.search_output = None
         state.rag_output = None
@@ -550,8 +526,18 @@ class ChatWorkflow:
         if payload.get("correction_attempted", False):
             return self._route_to_safety(payload)
 
+        corrective = payload.get("retrieval_metrics", {}).get("corrective_rag", {})
+        if corrective.get("decision") in {"fallback", "insufficient_evidence"}:
+            return self._route_to_safety(payload)
+        for result in reversed(payload.get("agent_results", [])):
+            metadata = result.metadata if isinstance(result, AgentResult) else result.get("metadata", {})
+            agent = result.agent if isinstance(result, AgentResult) else result.get("agent")
+            if agent == "rag":
+                if metadata.get("reason") == "llm_unavailable":
+                    return self._route_to_safety(payload)
+                break
         route = payload.get("route") or "rag"
-        if route in {"rag", "parallel"} and payload.get("search_results"):
+        if route in {"rag", "document_qa", "parallel"} and payload.get("search_results"):
             return "retry_rag"
         if route in {"direct_answer", "summary", "simple_llm", "planning", "correction"}:
             return "retry_summary"

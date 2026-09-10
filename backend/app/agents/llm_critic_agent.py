@@ -57,7 +57,7 @@ class LLMCriticAgent:
             source = "fallback"
 
         citation_validation = state.evaluation.get("citation_validation")
-        if state.route == "rag" and citation_validation and not citation_validation.get("passed", False):
+        if state.route in {"rag", "document_qa"} and citation_validation and not citation_validation.get("passed", False):
             citation_issue = "RAG citation validation failed."
             review = review.model_copy(
                 update={
@@ -74,7 +74,7 @@ class LLMCriticAgent:
         state.critic_passed = review.passed
         state.critic_feedback = review.feedback
         state.critic_score = review.score
-        state.evaluation["critic"] = review.model_dump()
+        state.evaluation["critic"] = {**review.model_dump(), "source": source}
 
         logger.bind(
             conversation_id=state.conversation_id,

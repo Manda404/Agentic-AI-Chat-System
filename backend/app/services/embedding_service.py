@@ -11,12 +11,27 @@ route "pipeline" du provider hf-inference, exposée sous
 Implémente le protocole `EmbeddingService` défini dans `retrieval_ports.py`.
 """
 
+import math
+
 import httpx
 
 from app.config.settings import settings
 from app.logger import logger
 
 FEATURE_EXTRACTION_URL = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
+
+
+def validate_embeddings(vectors, count: int, dimensions: int) -> None:
+    """Refuse les réponses partielles, token embeddings et vecteurs invalides."""
+    if not isinstance(vectors, list) or len(vectors) != count:
+        raise ValueError("Embedding response count does not match input count.")
+    for vector in vectors:
+        if not isinstance(vector, list) or len(vector) != dimensions:
+            raise ValueError("Embedding dimensions do not match EMBEDDING_DIMENSIONS.")
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in vector):
+            raise ValueError("Embedding contains non-finite or non-numeric values.")
+        if not any(vector):
+            raise ValueError("Embedding must not be a zero vector.")
 
 
 class HuggingFaceEmbeddingService:
@@ -34,18 +49,22 @@ class HuggingFaceEmbeddingService:
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Calcule les embeddings de plusieurs textes en un seul appel batch."""
+        if not texts:
+            return []
         if not self.api_key:
             raise RuntimeError("HUGGINGFACE_API_KEY not set. Check your .env file.")
-
-        logger.bind(model=self.model, batch_size=len(texts)).info(
-            "Requesting embeddings from HuggingFace Inference Providers."
-        )
         url = FEATURE_EXTRACTION_URL.format(model=self.model)
+        vectors = []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"inputs": texts},
-            )
-            response.raise_for_status()
-            return response.json()
+            for start in range(0, len(texts), 32):
+                batch = texts[start:start + 32]
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={"inputs": batch},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                validate_embeddings(payload, len(batch), settings.embedding_dimensions)
+                vectors.extend(payload)
+        return vectors

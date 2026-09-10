@@ -276,6 +276,17 @@ class LangGraphWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.retrieval_metrics)
         self.assertTrue(response.tool_results)
 
+    async def test_repeated_question_reexecutes_with_current_history(self):
+        from app.models.chat_models import ChatMessage
+        workflow = self.build_workflow()
+        first = await workflow.run(ChatRequest(message="hello", conversation_id="same"))
+        second = await workflow.run(ChatRequest(message="hello", conversation_id="same", history=[ChatMessage(role="user", content="New context")]))
+        self.assertFalse(first.cached)
+        self.assertFalse(second.cached)
+        self.assertEqual(second.route, "greeting")
+        self.assertEqual(second.context_messages, 4)
+        self.assertEqual(workflow.memory_service.values, {})
+
     async def test_corrective_rag_can_rewrite_and_retry_retrieval(self):
         workflow = self.build_workflow()
         response = await workflow.run(ChatRequest(message="Weak retrieval question about agents"))

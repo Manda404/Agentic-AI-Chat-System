@@ -87,6 +87,15 @@ class GraphState:
     retrieval_correction_attempted: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def selected_documents(self) -> List[SearchResult]:
+        if self.reranked_results or "reranked_count" in self.retrieval_metrics or "corrective_rag" in self.retrieval_metrics:
+            documents = self.reranked_results
+        else:
+            documents = self.search_results
+        count = self.metadata.get("context_document_count")
+        return documents if count is None else documents[:count]
+
     @classmethod
     def from_mapping(cls, payload: Dict[str, Any]) -> "GraphState":
         """Reconstruit un état dataclass depuis le dictionnaire transmis par LangGraph."""

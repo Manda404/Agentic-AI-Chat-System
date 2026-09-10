@@ -1,5 +1,7 @@
 # Tests et évaluation
 
+> Mise à jour du 10 septembre 2026 : consulter [l’audit et les corrections](AUDIT_2026-09-10.md) pour les contrats actuels d’ingestion, sélection des sources, cache, retries et évaluation. Les descriptions historiques ci-dessous doivent être lues avec ces changements.
+
 > Inventaire vérifié et commandes exécutées le **30 août 2026**.
 
 ## 1. État vérifié

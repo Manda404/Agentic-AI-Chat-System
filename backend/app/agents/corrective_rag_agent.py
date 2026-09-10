@@ -69,7 +69,7 @@ class CorrectiveRAGAgent:
 
     async def run(self, state: GraphState) -> AgentResult:
         """Produit une décision CRAG et met à jour la trajectoire du graphe."""
-        documents = state.reranked_results or state.search_results
+        documents = state.selected_documents
         if not documents:
             return self._fallback_decision(state, [], "fallback", "No retrieved documents to evaluate.")
 

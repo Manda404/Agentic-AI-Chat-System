@@ -33,7 +33,7 @@ class ContextCompressionAgent:
 
     async def run(self, state: GraphState) -> AgentResult:
         """Compresse les documents rerankés et écrit `state.compressed_context`."""
-        documents = state.reranked_results or state.search_results
+        documents = state.selected_documents
         formatted = self._format_documents(documents)
         if self.use_llm and formatted:
             try:
@@ -50,6 +50,12 @@ class ContextCompressionAgent:
             compressed = self._local_compress(documents, state.user_message)
 
         state.compressed_context = compressed[: self.max_chars]
+        labels = {int(label) for label in re.findall(r"^\[(\d+)\]", state.compressed_context, re.MULTILINE)}
+        # Le compresseur local conserve un préfixe contigu des candidats.
+        count = 0
+        while count + 1 in labels:
+            count += 1
+        state.metadata["context_document_count"] = count
         state.retrieval_metrics["compressed_context_chars"] = len(state.compressed_context)
 
         logger.bind(
@@ -89,7 +95,9 @@ class ContextCompressionAgent:
                 if item.page_number is not None:
                     label += f", page {item.page_number}"
                 label += ")"
-            snippet_budget = max(200, min(900, remaining - len(label) - 8))
+            snippet_budget = min(900, remaining - len(label) - 1)
+            if snippet_budget <= 0:
+                break
             snippet = self._select_evidence(item.snippet, query_terms, snippet_budget)
             block = f"{label}\n{snippet}"
             if len(block) > remaining:

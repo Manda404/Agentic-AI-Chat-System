@@ -14,7 +14,7 @@ class WorkflowEvaluator:
 
     async def run_cases(self, cases: list[EvaluationCase] | None = None) -> list[dict]:
         results = []
-        for case in cases or DEFAULT_EVALUATION_CASES:
+        for case in DEFAULT_EVALUATION_CASES if cases is None else cases:
             response = await self.workflow.run(ChatRequest(message=case.message))
             metrics = score_response(response, case.expected_route, case.expect_sources)
             if case.expect_critic_passed is not None:

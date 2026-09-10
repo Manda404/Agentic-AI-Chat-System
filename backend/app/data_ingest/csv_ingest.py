@@ -15,7 +15,7 @@ from app.logger import logger
 def load_documents_from_csv(file_path: str) -> List[Dict[str, str]]:
     """Lit un CSV ligne par ligne et retourne une liste de documents (title/snippet/category/source)."""
     documents: List[Dict[str, str]] = []
-    with open(file_path, newline="", encoding="utf-8") as csv_file:
+    with open(file_path, newline="", encoding="utf-8-sig") as csv_file:
         reader = csv.DictReader(csv_file)
         required_columns = {"title", "snippet", "category"}
         missing_columns = required_columns - set(reader.fieldnames or [])

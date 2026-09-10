@@ -56,6 +56,8 @@ class SummaryAgent:
             f"{message.get('role', 'unknown')}: {message.get('content', '')}"
             for message in state.conversation_context
         )
+        if state.correction_attempted and state.critic_feedback:
+            context += "\nPrevious draft: " + (state.draft_answer or "") + "\nQuality feedback: " + state.critic_feedback
         summary = await self.llm_service.summarize(state.user_message, context)
         state.summary_output = summary
         state.draft_answer = summary

@@ -37,13 +37,13 @@ class MongoVectorStore:
         """Vectorise la requête puis interroge l'index Atlas Vector Search."""
         collection = self.search_service.collection
         if collection is None:
-            return []
+            raise RuntimeError("MongoDB Atlas is not available for vector search.")
 
         try:
             query_embedding = await self.embedding_service.embed_query(query)
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("Query embedding failed; skipping vector search.")
-            return []
+            raise RuntimeError("Query embedding failed.") from exc
 
         try:
             vector_limit = max(limit * 5, 20)
@@ -61,7 +61,7 @@ class MongoVectorStore:
             ]
             access_filter = self.search_service._search_access_filter(owner_id)
             if access_filter:
-                pipeline.append({"$match": access_filter})
+                pipeline[0]["$vectorSearch"]["filter"] = access_filter
             pipeline.append({"$limit": limit})
             hits = await asyncio.to_thread(lambda: list(collection.aggregate(pipeline)))
             return [
@@ -79,4 +79,4 @@ class MongoVectorStore:
             ]
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("Vector search query failed.")
-            return []
+            raise RuntimeError("Vector search query failed; check index readiness and filter fields.") from exc

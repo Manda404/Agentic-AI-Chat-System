@@ -31,7 +31,7 @@ class RAGAgent:
         4. ajouter les sources ;
         5. fournir un fallback clair si aucun document ou si le LLM échoue.
         """
-        documents = state.reranked_results or state.search_results
+        documents = state.selected_documents
         if not documents:
             # Ne pas halluciner : sans document, on annonce explicitement la limite.
             fallback = (
@@ -55,6 +55,12 @@ class RAGAgent:
         # Le contexte compressé est prioritaire pour maîtriser la taille du prompt.
         retrieved_documents = state.compressed_context or self._format_retrieved_documents(documents)
 
+        if state.correction_attempted and state.critic_feedback:
+            conversation_history += (
+                "\nPrevious draft (to revise):\n" + (state.draft_answer or "")
+                + "\nQuality feedback: " + state.critic_feedback
+            )
+
         try:
             # Chemin nominal : le LLM répond uniquement depuis le contexte récupéré.
             answer = await self.llm_service.grounded_answer(
@@ -66,7 +72,7 @@ class RAGAgent:
             state.draft_answer = state.rag_output
             metadata = {
                 "grounded": True,
-                "sources_count": len(state.search_results),
+                "sources_count": len(documents),
                 "document_ids": [item.document_id for item in documents if item.document_id],
             }
         except Exception as exc:
@@ -75,7 +81,7 @@ class RAGAgent:
             )
             # En cas de panne LLM, on préfère exposer le résultat documentaire plutôt que planter.
             state.rag_output = self._append_sources(
-                state.search_output or "Documents were found, but the grounded answer could not be generated.",
+                "La génération est indisponible. Voici les extraits retrouvés :\n\n" + retrieved_documents,
                 state,
             )
             state.draft_answer = state.rag_output
@@ -84,7 +90,7 @@ class RAGAgent:
         logger.bind(
             conversation_id=state.conversation_id,
             output_length=len(state.rag_output or ""),
-            sources_count=len(state.search_results),
+            sources_count=len(documents),
         ).info("RAG agent completed.")
 
         return AgentResult(agent="rag", output=state.rag_output or "", metadata=metadata)
@@ -110,8 +116,8 @@ class RAGAgent:
     def _append_sources(self, answer: str, state: GraphState) -> str:
         """Ajoute une section `Sources` à partir des meilleurs documents disponibles."""
         source_lines = []
-        for item in (state.reranked_results or state.search_results)[:3]:
-            source = f"- {item.title}"
+        for index, item in enumerate(state.selected_documents, start=1):
+            source = f"- [{index}] {item.title}"
             if item.page_number is not None:
                 source += f", page {item.page_number}"
             if item.file_name:

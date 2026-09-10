@@ -542,15 +542,15 @@ export default function Home() {
     }
   }
 
-  async function ingestSampleData() {
+  async function ingestDirectory() {
     if (!token || ingestLoading) {
       appendLog("WARN", "Ingest request skipped because session is offline or a job is already running.");
       return;
     }
 
     setIngestLoading(true);
-    setAuthMessage("Indexing sample documents...");
-    appendLog("INFO", "Sample ingest triggered.");
+    setAuthMessage("Indexing documents from the server folder...");
+    appendLog("INFO", "Folder ingest triggered.");
 
     try {
       const response = await fetch(`${BACKEND_URL}/api/v1/ingest/batch`, {
@@ -577,13 +577,16 @@ export default function Home() {
           documents_processed: number;
           documents_indexed: number;
           status: string;
+          warnings?: string[];
         }>;
         errors?: string[];
       };
 
+      const warnings = [...(data.errors ?? []), ...data.files_summary.flatMap((file) => file.warnings ?? [])];
       setAuthMessage(
-        `Indexed ${data.total_documents_indexed} docs from ${data.total_files_processed} files into ${data.index_name}.`
+        `Indexed ${data.total_documents_indexed} docs from ${data.total_files_processed} files. ${warnings.join(" ")}`.trim()
       );
+      warnings.forEach((warning) => appendLog("WARN", warning));
       appendLog(
         "INFO",
         `Batch ingest completed: ${data.total_documents_indexed} documents indexed from ${data.total_files_processed} files.`
@@ -687,15 +690,18 @@ export default function Home() {
         file_type: string;
         documents_processed: number;
         stored_path: string;
+        embedded_count?: number;
+        warnings?: string[];
       };
 
       setAuthMessage(
-        `${data.file_name}: saved in ${data.stored_path} and indexed into ${data.index_name}.`
+        `${data.file_name}: ${data.indexed_count} passages indexed. ${(data.warnings ?? []).join(" ")}`.trim()
       );
       appendLog(
         "INFO",
         `Upload completed: ${data.file_name} (${data.documents_processed} processed, ${data.indexed_count} indexed).`
       );
+      (data.warnings ?? []).forEach((warning) => appendLog("WARN", warning));
       setSelectedDocument(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -1323,7 +1329,7 @@ export default function Home() {
 
                 <button
                   type="button"
-                  onClick={ingestSampleData}
+                  onClick={ingestDirectory}
                   style={styles.secondaryButtonSquare}
                   disabled={ingestLoading}
                 >

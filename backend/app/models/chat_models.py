@@ -73,10 +73,10 @@ class CriticReview(BaseModel):
     """Évaluation structurée d'une réponse provisoire."""
 
     passed: bool = False
-    score: float = 0.0
-    groundedness_score: float = 0.0
-    relevance_score: float = 0.0
-    clarity_score: float = 0.0
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    groundedness_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    clarity_score: float = Field(default=0.0, ge=0.0, le=1.0)
     issues: List[str] = Field(default_factory=list)
     recommendation: Literal["accept", "revise", "retrieve_more", "fallback"] = "fallback"
     feedback: str = "No critic review available."
@@ -87,7 +87,7 @@ class CorrectiveRAGDocumentGrade(BaseModel):
 
     label: str
     verdict: Literal["relevant", "ambiguous", "irrelevant"] = "irrelevant"
-    relevance_score: float = 0.0
+    relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = "No relevance evidence found."
 
 
@@ -95,7 +95,7 @@ class CorrectiveRAGReview(BaseModel):
     """Décision CRAG structurée sur le contexte récupéré."""
 
     decision: Literal["accept", "rewrite", "fallback"] = "fallback"
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     rewritten_query: Optional[str] = None
     grades: List[CorrectiveRAGDocumentGrade] = Field(default_factory=list)
     feedback: str = "No corrective retrieval review available."

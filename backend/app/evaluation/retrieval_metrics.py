@@ -29,16 +29,16 @@ def precision_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> floa
     if k <= 0:
         return 0.0
     top_k = retrieved[:k]
-    hits = sum(1 for title in top_k if title in relevant)
+    hits = len(set(top_k) & relevant)
     return hits / k
 
 
 def recall_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
     """Part des documents pertinents effectivement retrouvés dans les k premiers résultats."""
-    if not relevant:
+    if not relevant or k <= 0:
         return 0.0
     top_k = retrieved[:k]
-    hits = sum(1 for title in top_k if title in relevant)
+    hits = len(set(top_k) & relevant)
     return hits / len(relevant)
 
 
@@ -56,11 +56,15 @@ def ndcg_at_k(retrieved: Sequence[str], relevant: Set[str], k: int) -> float:
     pertinents trouvés tôt plus que ceux trouvés tard, normalisé par le
     meilleur classement possible (tous les documents pertinents en tête).
     """
+    if k <= 0:
+        return 0.0
     top_k = retrieved[:k]
-    dcg = sum(
-        (1.0 if title in relevant else 0.0) / math.log2(rank + 1)
-        for rank, title in enumerate(top_k, start=1)
-    )
+    seen = set()
+    dcg = 0.0
+    for rank, title in enumerate(top_k, start=1):
+        if title in relevant and title not in seen:
+            dcg += 1.0 / math.log2(rank + 1)
+        seen.add(title)
     ideal_hits = min(len(relevant), k)
     idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
     return dcg / idcg if idcg > 0 else 0.0

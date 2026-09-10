@@ -32,16 +32,18 @@ class HybridRetrieverAgent:
     async def run(self, state: GraphState) -> AgentResult:
         """Fusionne full-text + vectoriel, met à jour l'état et expose des métriques de retrieval."""
         full_text_results = state.search_results or []
+        state.retrieval_metrics.pop("vector_error", None)
         try:
             # Recherche vectorielle optionnelle : peut être branchée plus tard via VectorStorePort.
             vector_results = await self.vector_store.similarity_search(
-                state.user_message,
+                state.metadata.get("retrieval_query") or state.user_message,
                 limit=self.limit,
                 owner_id=state.metadata.get("user_id"),
             )
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("Vector search failed; continuing with full-text results.")
             vector_results = []
+            state.retrieval_metrics["vector_error"] = str(exc)
 
         # Fusionne par rang, car les scores full-text et vectoriels ne partagent pas la même échelle.
         merged = self._merge(full_text_results, vector_results)
@@ -69,8 +71,12 @@ class HybridRetrieverAgent:
         """Fusionne full-text et vectoriel avec Reciprocal Rank Fusion."""
         fused: dict[tuple[str, str, int | None], tuple[SearchResult, float]] = {}
         for results in (full_text, vector):
+            seen = set()
             for rank, item in enumerate(results, start=1):
                 key = self._key(item)
+                if key in seen:
+                    continue
+                seen.add(key)
                 current_item, current_score = fused.get(key, (item, 0.0))
                 if item.snippet and len(item.snippet) > len(current_item.snippet):
                     current_item = item

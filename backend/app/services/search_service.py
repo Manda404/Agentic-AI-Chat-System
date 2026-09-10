@@ -23,12 +23,12 @@ l'event loop pendant une requête Mongo.
 """
 
 import asyncio
-import hashlib
 from typing import Any, Dict, List
 
 import certifi
 
 from app.config.settings import settings
+from app.data_ingest.document_processing import with_document_id
 from app.logger import logger
 from app.models.chat_models import SearchResult
 
@@ -88,21 +88,18 @@ class SearchService:
             for document in (self._with_stable_id(document) for document in documents)
         }
         normalized_documents = list(normalized_by_id.values())
-        try:
-            import importlib
+        from pymongo import UpdateOne
 
-            pymongo_module = importlib.import_module("pymongo")
-            replace_one = getattr(pymongo_module, "ReplaceOne")
-            operations = [
-                replace_one({"_id": document["_id"]}, document, upsert=True)
-                for document in normalized_documents
-            ]
-            result = await asyncio.to_thread(self._collection.bulk_write, operations, ordered=False)
-            indexed_count = int(result.upserted_count + result.modified_count + result.matched_count)
-        except Exception:
-            logger.exception("Bulk upsert failed; falling back to insert_many.")
-            await asyncio.to_thread(self._collection.insert_many, normalized_documents)
-            indexed_count = len(normalized_documents)
+        # $set préserve un vecteur existant si une réingestion identique échoue côté fournisseur.
+        operations = [
+            UpdateOne({"_id": document["_id"]},
+                      {"$set": {key: value for key, value in document.items() if key != "_id"}},
+                      upsert=True)
+            for document in normalized_documents
+        ]
+        result = await asyncio.to_thread(self._collection.bulk_write, operations, ordered=False)
+        # modified_count est déjà inclus dans matched_count.
+        indexed_count = int(result.upserted_count + result.matched_count)
         logger.bind(collection=self.index_name, document_count=len(normalized_documents)).info(
             "Bulk index completed."
         )
@@ -221,25 +218,7 @@ class SearchService:
 
     def _with_stable_id(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """Retourne une copie du document avec `_id` et `document_id` déterministes."""
-        normalized = dict(document)
-        document_id = str(normalized.get("document_id") or normalized.get("_id") or "").strip()
-        if not document_id:
-            identity_owner = (
-                str(normalized.get("owner_id", "") or "").strip().lower()
-                if normalized.get("visibility") == "private"
-                else ""
-            )
-            identity = "|".join(
-                [identity_owner]
-                + [
-                    str(normalized.get(key, "") or "").strip()
-                    for key in ("source", "file_name", "page_number", "title", "snippet")
-                ]
-            )
-            document_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        normalized["document_id"] = document_id
-        normalized["_id"] = document_id
-        return normalized
+        return with_document_id(document)
 
     def _search_access_filter(self, owner_id: str | None) -> Dict[str, Any]:
         """Filtre de visibilité appliqué aux recherches et inventaires."""

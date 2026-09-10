@@ -44,7 +44,7 @@ def load_documents_from_pdf(file_path: str) -> List[Dict[str, str]]:
             
             documents.append({
                 "title": f"{file_name} - Page {page_num}",
-                "snippet": text[:5000] if len(text) > 5000 else text,  # Limit snippet size
+                "snippet": text,  # Le découpage commun conserve aussi la fin de chaque page.
                 "category": "pdf-document",
                 "source": f"pdf-ingest:{file_name}",
                 "page_number": str(page_num),
