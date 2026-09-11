@@ -5,9 +5,11 @@ import time
 from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, START, END
+from openai import APIError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config.settings import settings
+from app.logger import logger
 from app.models.chat_models import AgentResult
 from app.services.llm_service import ModelCapability
 from app.state import GraphState
@@ -128,6 +130,7 @@ class DocumentaryTeam:
 
     async def _plan(self, ctx):
         state = ctx['state']
+        state.metadata['_team_stage'] = 'planner'
         ctx['extra_calls'] += 1
         plan = await self.planner.run(self.llm, state)
         state.metadata['research_plan'] = plan.model_dump()
@@ -137,6 +140,7 @@ class DocumentaryTeam:
 
     async def _research(self, ctx):
         state = ctx['state']
+        state.metadata['_team_stage'] = 'researcher'
         # Each pass is request-local and bounded. Retain counters even on cancellation.
         try:
             result = await self.researcher.run(state)
@@ -170,6 +174,7 @@ class DocumentaryTeam:
 
     async def _synthesize(self, ctx):
         state = ctx['state']
+        state.metadata['_team_stage'] = 'synthesizer'
         ctx['extra_calls'] += 1
         synthesis = await self.synthesizer.run(self.llm, state)
         state.record_result(AgentResult(agent='synthesis_agent', output=synthesis.text, metadata=synthesis.model_dump(exclude={'text'})))
@@ -190,6 +195,7 @@ class DocumentaryTeam:
 
     async def _verify(self, ctx):
         state = ctx['state']
+        state.metadata['_team_stage'] = 'verifier'
         ctx['extra_calls'] += 1
         review = await self.verifier.run(self.llm, state)
         state.record_result(AgentResult(agent='verification_agent', output=review.feedback, metadata=review.model_dump()))
@@ -218,10 +224,19 @@ class DocumentaryTeam:
         except TimeoutError:
             state.metadata['answer_failure'] = 'agent_timeout'
             self._event(state, 'Orchestrator', 'User', 'Time limit reached: abstaining.')
-        except Exception:
-            state.metadata['answer_failure'] = 'agent_stage_failed'
-            self._event(state, 'Orchestrator', 'User', 'An agent failed or returned an invalid decision: abstaining.')
+        except Exception as exc:
+            reason = 'llm_unavailable' if isinstance(exc, APIError) else 'agent_stage_failed'
+            state.metadata['answer_failure'] = reason
+            stage = state.metadata.get('_team_stage', 'unknown')
+            # Do not expose provider bodies or validation inputs (which can contain documents).
+            details = {'stage': stage, 'error_type': type(exc).__name__}
+            state.evaluation['agent_error'] = details
+            logger.bind(**details).warning('Documentary team stopped: {}', reason)
+            message = ('The generation service is unavailable.' if reason == 'llm_unavailable'
+                       else 'An agent failed or returned an invalid decision.')
+            self._event(state, 'Orchestrator', 'User', message, **details)
         finally:
+            state.metadata.pop('_team_stage', None)
             # In-flight attempted calls are accounted separately on state by the node entry hooks.
             state.evaluation['llm_calls'] = state.metadata.pop('_team_llm_calls', latest['extra_calls'] + latest['research_calls'])
             state.evaluation['documentary_team'] = {'llm_calls': state.evaluation['llm_calls'],
