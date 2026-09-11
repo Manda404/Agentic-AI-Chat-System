@@ -134,6 +134,25 @@ class TeamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.evaluation['answer']['reason'], 'agent_stage_failed')
         w.documentary_agent.tools.rechercher.assert_not_awaited()
         self.assertEqual(r.evaluation['llm_calls'], 1)
+        self.assertEqual(r.evaluation['agent_error']['stage'], 'planner')
+        self.assertIn('internal error', r.answer)
+        self.assertNotIn('add a relevant document', r.answer)
+
+    async def test_unavailable_model_is_not_reported_as_missing_evidence(self):
+        import httpx
+        from openai import BadRequestError
+        w = self.workflow([])
+        w.llm_service.generate.side_effect = BadRequestError(
+            'private provider details',
+            response=httpx.Response(400, request=httpx.Request('POST', 'https://provider.invalid')),
+            body={'code': 'model_not_available'})
+        r = await w.run(ChatRequest(message='do you have any argument about Baruch Spinoza'))
+        self.assertEqual(r.evaluation['answer']['reason'], 'llm_unavailable')
+        self.assertEqual(r.evaluation['agent_error'], {'stage': 'planner', 'error_type': 'BadRequestError'})
+        self.assertIn('generation service is unavailable', r.answer)
+        self.assertNotIn('private provider details', str(r))
+        self.assertEqual(r.evaluation['llm_calls'], 1)
+        w.documentary_agent.tools.rechercher.assert_not_awaited()
 
     async def test_plan_is_transmitted_and_graph_has_explicit_agents(self):
         w = self.workflow([{'answerable': True, 'text': 'Deux jours [1].'}, {'approved': True, 'feedback': 'OK'}])

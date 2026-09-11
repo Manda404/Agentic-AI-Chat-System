@@ -24,6 +24,8 @@ class FinalAnswerAgent:
                 state.final_answer = 'The model did not produce a valid action. Please try again.'
             elif reason == 'llm_unavailable':
                 state.final_answer = 'The generation service is unavailable. Please try again later.'
+            elif reason == 'agent_stage_failed':
+                state.final_answer = 'An internal error interrupted the research. Please try again.'
             elif state.route in {'calculation', 'document_list'}:
                 state.final_answer = state.draft_answer or 'This tool is temporarily unavailable.'
             else:

@@ -874,14 +874,8 @@ export default function Home() {
 
   const redisTone: StatusTone = health?.redis_connected ? "online" : "offline";
   const mongoTone: StatusTone = health?.mongodb_connected ? "online" : "offline";
-  const modelTone: StatusTone =
-    health?.llm_provider === "ollama" || health?.llm_provider === "huggingface"
-      ? healthError
-        ? "offline"
-        : "online"
-      : health?.llm_provider
-        ? "neutral"
-        : "offline";
+  // The health endpoint does not probe model access or provider quota.
+  const modelTone: StatusTone = "neutral";
 
   const authFrameStyle: CSSProperties = {
     ...styles.authFrame,
@@ -1057,7 +1051,7 @@ export default function Home() {
                   <StatusDot label="backend" tone={backendTone} />
                   <StatusDot label="redis" tone={redisTone} />
                   <StatusDot label="mongodb" tone={mongoTone} />
-                  <StatusDot label="model" tone={modelTone} />
+                  <StatusDot label="model" tone={modelTone} statusText="unverified" />
                 </div>
 
                 <div style={quickInfoGridStyle}>
@@ -1229,7 +1223,7 @@ export default function Home() {
                 <StatusDot label="backend" tone={backendTone} />
                 <StatusDot label="redis" tone={redisTone} />
                 <StatusDot label="mongodb" tone={mongoTone} />
-                <StatusDot label="model" tone={modelTone} />
+                <StatusDot label="model" tone={modelTone} statusText="unverified" />
               </div>
 
               <div style={styles.cornerInfo}>
@@ -1776,10 +1770,12 @@ function ThemeToggleButton({
 function StatusDot({
   label,
   tone,
+  statusText,
   compact = false,
 }: {
   label: string;
   tone: StatusTone;
+  statusText?: string;
   compact?: boolean;
 }) {
   const isOnline = tone === "online";
@@ -1813,7 +1809,7 @@ function StatusDot({
               : styles.statusValueNeutral),
         }}
       >
-        {isOnline ? "online" : isOffline ? "offline" : "idle"}
+        {statusText ?? (isOnline ? "online" : isOffline ? "offline" : "idle")}
       </span>
     </div>
   );
