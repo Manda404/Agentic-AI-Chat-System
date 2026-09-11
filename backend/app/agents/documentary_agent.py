@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.config.settings import settings
 from app.models.chat_models import AgentResult, SearchResult, ToolResult
 from app.models.documentary_models import DocumentaryAction
+from app.services.llm_service import generation_failure_reason
 from app.state import GraphState
 
 
@@ -81,8 +82,8 @@ class DocumentaryAgent:
             except (ValidationError, ValueError, TypeError):
                 self._fail(state, 'invalid_agent_action')
                 return
-            except Exception:
-                self._fail(state, 'llm_unavailable')
+            except Exception as exc:
+                self._fail(state, generation_failure_reason(exc))
                 return
             state.record_result(AgentResult(agent='documentary_decision', output=action.action,
                                             metadata=action.model_dump(exclude_none=True, exclude={'text'})))

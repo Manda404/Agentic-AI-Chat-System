@@ -12,7 +12,8 @@ if settings.app_env.lower() not in {"development", "local", "test"} and (
 ):
     raise RuntimeError("AUTH_SECRET_KEY must be set to a strong non-default value outside development.")
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,9 +34,13 @@ async def lifespan(application: FastAPI):
     """Create network clients in the active worker and close them on shutdown."""
     services = ApplicationServices()
     application.state.services = services
+    model_probe = asyncio.create_task(services.llm.check_availability())
     try:
         yield
     finally:
+        model_probe.cancel()
+        with suppress(asyncio.CancelledError):
+            await model_probe
         await services.close()
 
 app = FastAPI(

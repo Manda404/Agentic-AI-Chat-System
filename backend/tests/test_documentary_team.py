@@ -161,6 +161,25 @@ class TeamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Vérifier la règle', str(w.llm_service.documentary_step.call_args_list[0].kwargs['observations']))
         self.assertTrue({'planner', 'researcher', 'synthesizer', 'verifier'} <= set(w.documentary_team.graph.get_graph().nodes))
 
+    async def test_payment_failure_at_each_stage_is_actionable(self):
+        import httpx
+        from openai import APIStatusError
+        for stage in ('planner', 'researcher', 'synthesizer'):
+            with self.subTest(stage=stage):
+                error = APIStatusError('credits exhausted', response=httpx.Response(
+                    402, request=httpx.Request('POST', 'https://provider.invalid')), body=None)
+                w = self.workflow([])
+                plan = json.dumps({'objective': 'Research', 'questions': ['Spinoza?']})
+                if stage == 'planner':
+                    w.llm_service.generate.side_effect = [error]
+                elif stage == 'researcher':
+                    w.llm_service.documentary_step.side_effect = error
+                else:
+                    w.llm_service.generate.side_effect = [plan, error]
+                r = await w.run(ChatRequest(message='Spinoza?', mode='documents'))
+                self.assertEqual(r.evaluation['answer']['reason'], 'llm_payment_required')
+                self.assertIn('credits or a billing update', r.answer)
+
     async def test_concurrent_collaboration_requests_are_isolated(self):
         import asyncio
         w = self.workflow([])
