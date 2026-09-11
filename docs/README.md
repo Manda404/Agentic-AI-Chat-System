@@ -1,62 +1,12 @@
-# Documentation — Agentic RAG Platform
+# Project documentation
 
-Cette documentation décrit l'état réel du projet sur la branche
-`architecture-improvements`, vérifié contre le code le **30 août 2026**.
+Current reference: the four-agent collaborative workflow with parallel RAG retrieval.
 
-## Parcours conseillé
+1. [Collaborative architecture](ARCHITECTURE_AGENT.md): agents, tools, handoffs and budgets.
+2. [Step-by-step operation](FONCTIONNEMENT.md): the complete request lifecycle.
+3. [Agents and components](AGENTS.md): responsibilities and contracts.
+4. [RAG pipeline](RAG_SYSTEM.md): ingestion, parallel retrieval and limitations.
+5. [Evaluation](EVALUATION.md): tests, abstention and benchmarks.
+6. [Deployment](DEPLOYMENT_FREE.md): the existing Render/Vercel setup.
 
-1. [FONCTIONNEMENT.md](FONCTIONNEMENT.md) — suivre une utilisation complète,
-   du démarrage jusqu'à l'affichage de la réponse.
-2. [GUIDE_PROJET.md](GUIDE_PROJET.md) — comprendre l'architecture, l'API, la
-   configuration, les données, la sécurité et les limites opérationnelles.
-3. [AGENTS.md](AGENTS.md) — connaître le rôle, les entrées, les sorties et les
-   fallbacks de chaque agent LangGraph.
-4. [RAG_SYSTEM.md](RAG_SYSTEM.md) — approfondir l'ingestion, le retrieval
-   hybride, le reranking, les citations et les limites de qualité.
-5. [EVALUATION.md](EVALUATION.md) — exécuter les tests et mesurer la qualité du
-   retrieval.
-
-## Ce qui est réellement implémenté
-
-- API FastAPI protégée par JWT pour le chat, l'ingestion et la gestion du
-  contexte conversationnel.
-- Graphe LangGraph de 19 nœuds, compilé une fois par processus backend.
-- Planning LLM structuré avec fallback déterministe.
-- Recherche MongoDB Atlas full-text et vectorielle, puis reranking lexical et
-  sémantique.
-- Génération RAG avec consignes de grounding et citations dans le texte, puis
-  ajout automatique d'une section `Sources:`.
-- Mémoire, comptes, cache et rate limiting via Redis, avec fallback local en mémoire.
-- Critic LLM avec fallback déterministe et garde-fou de sortie par regex.
-- Registre borné de trois outils déterministes : calculatrice arithmétique,
-  inventaire documentaire et validation structurelle + support lexical des citations.
-- Frontend Next.js avec authentification, validation de session, upload PDF/CSV,
-  ingestion par dossier, reset des données et cockpit de debug.
-- I/O réseau asynchrones pour le LLM et Redis ; appels PyMongo déportés dans des
-  threads pour ne pas bloquer l'event loop.
-
-## Ce qui n'est pas garanti
-
-- `LLM_PROVIDER=ollama` est accepté par la configuration, mais Ollama n'est pas
-  branché dans `LLMService` : le chemin LLM réel utilise Hugging Face.
-- La pastille `model` du frontend ne sonde pas le fournisseur LLM ; elle reflète
-  seulement la configuration retournée par `/health`.
-- Le safety guard n'est pas une solution DLP complète et ne traite pas à lui
-  seul les prompt injections.
-- Le validateur de citations ajoute un signal lexical, mais pas encore un vrai
-  entailment sémantique.
-- Le cache n'est pas sémantique et ne versionne pas encore le prompt ou le modèle.
-- Le projet n'a pas encore de tests frontend, de tests de charge, de benchmark
-  de génération/groundedness automatisé, ni de rôles/tenants complets.
-
-## Règle de maintenance
-
-Lorsqu'un changement touche `backend/app/workflows/`, `backend/app/agents/`, les
-routes API, les modèles de réponse, la configuration ou les actions du frontend,
-mettre à jour le document spécialisé correspondant et la date de vérification.
-Les affirmations de cette documentation distinguent volontairement :
-
-- le chemin nominal ;
-- le mode dégradé ou fallback ;
-- le code disponible mais non activé ;
-- les limites ou anomalies connues.
+[Simple reference workflow](ARCHITECTURE_SIMPLIFIEE.md) documents the baseline. The [initial audit](AUDIT_2026-09-10.md) preserves earlier findings and corrections. The [historical guide](GUIDE_PROJET.md) describes the older orchestration and is not the current graph reference. Existing document file names remain unchanged so links stay valid; their contents are in English.

@@ -1,4 +1,4 @@
-"""Ports extensibles pour embeddings et recherche vectorielle."""
+"""Extensible interfaces for embedding providers and vector retrieval."""
 
 from typing import Protocol
 
@@ -6,17 +6,17 @@ from app.models.chat_models import SearchResult
 
 
 class EmbeddingService(Protocol):
-    """Interface minimale pour brancher un fournisseur d'embeddings."""
+    """Minimal interface for an embedding provider."""
 
     async def embed_query(self, text: str) -> list[float]:
-        """Retourne un vecteur pour une requête utilisateur."""
+        """Return one vector for a user query."""
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Retourne un vecteur par texte, en un seul appel batch."""
+        """Return one vector per text in a batch request."""
 
 
 class VectorStorePort(Protocol):
-    """Interface minimale pour brancher une future recherche vectorielle."""
+    """Minimal interface for a vector retrieval implementation."""
 
     async def similarity_search(
         self,
@@ -24,11 +24,11 @@ class VectorStorePort(Protocol):
         limit: int = 5,
         owner_id: str | None = None,
     ) -> list[SearchResult]:
-        """Retourne les documents proches de la requête."""
+        """Return documents similar to the query."""
 
 
 class NullVectorStore:
-    """Fallback sans dépendance : aucune recherche vectorielle disponible."""
+    """Dependency-free fallback with no vector retrieval available."""
 
     async def similarity_search(
         self,

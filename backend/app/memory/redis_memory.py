@@ -1,31 +1,4 @@
-"""
-Accès unifié à Redis (client ASYNCHRONE), avec repli automatique en mémoire
-si Redis est injoignable.
-
-Cette classe est réutilisée pour TROIS usages différents dans le
-projet (voir les appelants) :
-1. Stockage des comptes utilisateurs (`user:<email>`), sans expiration.
-2. Historique de conversation (`conversation:<owner_hash>:<id>:messages`), qui
-   expire après `ttl_seconds` (1h par défaut).
-3. Cache des réponses de chat déjà générées
-   (`chat:<owner_hash>:<id>:docs:<version>:<message>`).
-
-Toutes les opérations d'exécution (`get_messages`, `append_message`, ...)
-utilisent `redis.asyncio` : ce sont des méthodes `async def` appelées depuis
-des agents/routes déjà async, et un client Redis synchrone bloquerait
-l'event loop le temps de l'aller-retour réseau. Seule la vérification de
-connectivité au démarrage (`__init__`) reste un ping synchrone bref, sur un
-client jetable, avant que l'event loop ne serve de vraies requêtes.
-
-Important : si Redis n'est pas disponible au démarrage (mauvaise URL,
-service arrêté...), TOUTES les méthodes basculent silencieusement sur
-un dictionnaire Python en mémoire (`_memory_store` / `_kv_store`). Le
-backend continue donc de fonctionner sans Redis, mais :
-- les données sont perdues au redémarrage du process ;
-- elles ne sont PAS partagées entre plusieurs workers/instances.
-Chaque bascule est loguée en `warning` pour que ce mode dégradé soit
-visible dans les logs plutôt que silencieux.
-"""
+"""Asynchronous Redis access with local-memory fallback. User accounts use user:<email> without expiration; owner-scoped conversation histories expire after ttl_seconds. Generic key/value methods also support legacy runtime data. Runtime operations use redis.asyncio; only the disposable startup connectivity probe is synchronous. Fallback data is process-local, lost on restart and not replicated from Redis. Failures are logged so degraded operation remains visible."""
 
 import hashlib
 import json
@@ -36,14 +9,10 @@ from app.logger import logger
 
 
 class RedisMemoryService:
-    """Wrapper Redis asynchrone avec repli en mémoire locale en cas d'indisponibilité."""
+    """Asynchronous Redis wrapper with local-memory fallback on connection failures."""
 
     def __init__(self, url: str, ttl_seconds: int):
-        """
-        Vérifie la connectivité Redis avec un ping synchrone unique et
-        jetable, puis crée le client asynchrone réutilisé par toutes les
-        méthodes. Bascule en mode mémoire si le ping échoue.
-        """
+        """Perform a disposable synchronous startup ping, then create the shared asynchronous client. Fall back to local memory if the ping fails."""
         self.url = url
         self.ttl_seconds = ttl_seconds
         self._client = None
@@ -76,7 +45,7 @@ class RedisMemoryService:
 
     @staticmethod
     def _safe_endpoint(url: str) -> str:
-        """Retourne un endpoint utile au diagnostic sans identifiants ni paramètres."""
+        """Return a diagnostic endpoint without credentials or query parameters."""
         try:
             parsed = urlsplit(url)
             if not parsed.scheme or not parsed.hostname:
@@ -88,26 +57,26 @@ class RedisMemoryService:
             return "configured"
 
     async def close(self) -> None:
-        """Ferme le pool asynchrone Redis, s'il a été créé."""
+        """Close the asynchronous Redis pool if initialized."""
         if self._client is not None:
             await self._client.aclose()
 
     def _owner_scope(self, owner_id: Optional[str] = None) -> str:
-        """Retourne un scope court non réversible pour isoler les données par utilisateur."""
+        """Return a short irreversible scope for per-user isolation."""
         if not owner_id:
             return "shared"
         return hashlib.sha256(owner_id.strip().lower().encode("utf-8")).hexdigest()[:16]
 
     def conversation_key(self, conversation_id: str, owner_id: Optional[str] = None) -> str:
-        """Clé Redis pour la liste des messages d'une conversation."""
+        """Build the Redis key for a conversation's message list."""
         return f"conversation:{self._owner_scope(owner_id)}:{conversation_id}:messages"
 
     def user_key(self, email: str) -> str:
-        """Clé Redis pour le compte utilisateur associé à un email."""
+        """Build the Redis account key for an email."""
         return f"user:{email}"
 
     async def get_messages(self, conversation_id: str, owner_id: Optional[str] = None) -> List[Dict[str, str]]:
-        """Retourne tout l'historique (rôle + contenu) d'une conversation."""
+        """Return the complete role/content history of a conversation."""
         local_key = self.conversation_key(conversation_id, owner_id)
         if self._client:
             try:
@@ -127,7 +96,7 @@ class RedisMemoryService:
         content: str,
         owner_id: Optional[str] = None,
     ) -> None:
-        """Ajoute un message (user/assistant) à l'historique et rafraîchit son expiration."""
+        """Append a user/assistant message and refresh conversation expiration."""
         payload = {"role": role, "content": content}
         key = self.conversation_key(conversation_id, owner_id)
         if self._client:
@@ -142,7 +111,7 @@ class RedisMemoryService:
         self._memory_store.setdefault(key, []).append(payload)
 
     async def clear_messages(self, conversation_id: str, owner_id: Optional[str] = None) -> None:
-        """Supprime définitivement l'historique d'une conversation."""
+        """Permanently remove a conversation's history."""
         key = self.conversation_key(conversation_id, owner_id)
         if self._client:
             try:
@@ -155,7 +124,7 @@ class RedisMemoryService:
         self._memory_store.pop(key, None)
 
     async def clear_runtime_data(self, owner_id: Optional[str] = None) -> int:
-        """Supprime conversations et cache de chat, sans toucher aux comptes `user:*`."""
+        """Remove conversations and legacy chat cache while retaining user:* accounts."""
         deleted = 0
         owner_scope = self._owner_scope(owner_id)
         if self._client:
@@ -196,7 +165,7 @@ class RedisMemoryService:
         return deleted
 
     async def get_value(self, key: str) -> Optional[str]:
-        """Lit une valeur simple (utilisé pour les comptes utilisateurs et le cache de chat)."""
+        """Read a scalar value, including account and legacy runtime records."""
         if self._client:
             try:
                 return await self._client.get(key)
@@ -232,7 +201,7 @@ class RedisMemoryService:
         self._kv_store[key] = value
 
     async def increment_value(self, key: str, ttl: Optional[int] = None) -> int:
-        """Incrémente une valeur entière utilisée pour versionner un état runtime."""
+        """Increment an integer used for runtime state versioning."""
         if self._client:
             try:
                 value = int(await self._client.incr(key))
@@ -249,5 +218,5 @@ class RedisMemoryService:
 
     @property
     def using_redis(self) -> bool:
-        """True si la connexion Redis a réussi au démarrage (utilisé par `/health`)."""
+        """Whether the startup Redis connection succeeded, as reported by /health."""
         return self._available

@@ -1,13 +1,4 @@
-"""
-Routes de chat : le cœur fonctionnel exposé aux utilisateurs authentifiés.
-
-- `POST /api/v1/chat` : envoie un message au `ChatWorkflow`, qui décide
-  de la route (greeting/search/summary/parallel) et orchestre les agents.
-- `GET/DELETE /api/v1/conversations/{id}/context` : consulter ou vider
-  l'historique d'une conversation stocké dans Redis.
-
-Toutes ces routes exigent un utilisateur authentifié (`get_current_user`).
-"""
+"""Authenticated chat and conversation routes. POST /api/v1/chat delegates to ChatWorkflow; GET/DELETE /api/v1/conversations/{id}/context reads or clears owner-scoped Redis history."""
 
 from fastapi import APIRouter, Depends
 
@@ -28,7 +19,7 @@ async def chat(
     current_user: UserResponse = Depends(get_current_user),
     workflow: ChatWorkflow = Depends(get_chat_workflow),
 ) -> ChatResponse:
-    """Point d'entrée unique du chat : délègue tout le travail au ChatWorkflow."""
+    """Delegate the chat request to ChatWorkflow."""
     logger.bind(
         user_id=current_user.email,
         conversation_id=request.conversation_id or "new",
@@ -43,7 +34,7 @@ async def get_conversation_context(
     current_user: UserResponse = Depends(get_current_user),
     memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> ConversationContextResponse:
-    """Retourne l'historique brut (rôle + contenu) d'une conversation stockée dans Redis."""
+    """Return the stored role/content history of a conversation."""
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context requested."
     )
@@ -60,7 +51,7 @@ async def clear_conversation_context(
     current_user: UserResponse = Depends(get_current_user),
     memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> ConversationContextResponse:
-    """Supprime définitivement l'historique d'une conversation dans Redis."""
+    """Permanently clear this conversation's Redis history."""
     logger.bind(user_id=current_user.email, conversation_id=conversation_id).info(
         "Conversation context cleared."
     )

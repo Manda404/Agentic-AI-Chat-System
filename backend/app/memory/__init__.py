@@ -1,4 +1,1 @@
-"""
-Accès à Redis : historique de conversation, cache de réponses et
-stockage des comptes utilisateurs (voir `RedisMemoryService`).
-"""
+"""Redis conversation history and user-account storage through RedisMemoryService."""

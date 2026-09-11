@@ -1,146 +1,89 @@
-# Deploiement Cloud Gratuit
+# Cloud deployment using free-tier services
 
-Ce projet se deploie proprement en separant l'application des services manages deja gratuits.
+This guide describes the repository's deployment layout, separating the application from managed storage services. Provider plan limits and available deployment settings should be checked in the respective dashboards.
 
-## Architecture recommandee
+## Deployment layout
 
 ```text
-Frontend Next.js        -> Vercel Hobby
-Backend FastAPI Docker -> Render Free
-MongoDB Atlas          -> cluster free existant
-Redis                  -> Redis Cloud Free existant
-LLM                    -> HuggingFace Router
+Next.js frontend       -> Vercel Hobby
+FastAPI Docker backend -> Render Free
+MongoDB Atlas          -> existing managed cluster
+Redis                  -> existing Redis Cloud instance
+LLM                    -> Hugging Face Router
+Optional web search    -> Tavily
 ```
 
-## 1. Backend sur Render
+## 1. Backend on Render
 
-Le fichier `render.yaml` cree un Web Service Docker gratuit a partir de `backend/Dockerfile`.
+`render.yaml` declares a Docker web service using `backend/Dockerfile`.
 
-Dans Render:
+1. Connect the GitHub repository in Render.
+2. Select **New → Blueprint** and the repository.
+3. Let Render detect `render.yaml`.
+4. Supply the variables marked `sync: false`.
 
-1. Connecter le repository GitHub.
-2. Choisir `New` puis `Blueprint`.
-3. Selectionner ce repository.
-4. Render detecte `render.yaml`.
-5. Remplir les variables marquees `sync: false`.
+Required environment values:
 
-Variables obligatoires a renseigner:
-
-```env
-BACKEND_CORS_ORIGINS=https://ton-frontend.vercel.app
+```dotenv
+BACKEND_CORS_ORIGINS=https://your-frontend.vercel.app
 HUGGINGFACE_API_KEY=...
 MONGODB_URI=...
 REDIS_URL=...
 AUTH_SECRET_KEY=...
 ```
 
-Generation conseillee pour `AUTH_SECRET_KEY`:
+Set `TAVILY_API_KEY` to enable web search. Local `.env` values are not automatically copied to Render. Generate an authentication secret with:
 
-```bash
+```sh
 openssl rand -hex 32
 ```
 
-Apres deployement, verifier:
+After deployment, check `https://your-backend.onrender.com/health`.
 
-```text
-https://ton-backend.onrender.com/health
+Account for free-service cold starts and ephemeral storage. A sleeping service may take time to start; files uploaded under `backend/data` are not a durable object store. Confirm current plan behavior in Render before relying on it.
+
+## 2. Frontend on Vercel
+
+1. Import the GitHub repository.
+2. Set **Root Directory** to `frontend`.
+3. Use the Next.js defaults: build with `npm run build`, install with `npm install`, output detection automatic.
+4. Set the backend URL and redeploy:
+
+```dotenv
+NEXT_PUBLIC_BACKEND_URL=https://your-backend.onrender.com
 ```
-
-Limites Render Free importantes:
-
-- le service peut dormir apres une periode sans trafic;
-- le redemarrage peut prendre environ une minute;
-- le filesystem est ephemere, donc les fichiers uploades dans `backend/data` ne sont pas un stockage durable.
-
-## 2. Frontend sur Vercel
-
-Dans Vercel:
-
-1. Importer le repository GitHub.
-2. Choisir `frontend` comme Root Directory.
-3. Garder les commandes Next.js par defaut:
-   - Build Command: `npm run build`
-   - Install Command: `npm install`
-   - Output: auto
-4. Ajouter la variable:
-
-```env
-NEXT_PUBLIC_BACKEND_URL=https://ton-backend.onrender.com
-```
-
-Puis redeployer le frontend.
 
 ## 3. MongoDB Atlas
 
-Garder MongoDB Atlas en service externe. Ne pas le mettre dans Docker pour le free tier.
-
-Verifier que les index suivants existent dans la collection configuree:
-
-- `documents_search`
-- `documents_vector`
-
-La dimension vectorielle doit rester coherente avec `MODEL_EMBEDDING`.
-Par defaut, `BAAI/bge-small-en-v1.5` utilise `384` dimensions.
+Keep Atlas as an external service. Ensure that `documents_search` and `documents_vector` exist in the configured collection. Vector dimensions must match `MODEL_EMBEDDING`; the example `BAAI/bge-small-en-v1.5` configuration uses 384. Owner-scoped vector queries also require owner/visibility filter fields in the index. See [RAG_SYSTEM.md](RAG_SYSTEM.md).
 
 ## 4. Redis
 
-Utiliser ton Redis Cloud Free existant, puis mettre son URL dans Render:
+Set the managed Redis URL on Render:
 
-```env
-REDIS_URL=redis://default:mot_de_passe@host.redis.io:port
+```dotenv
+REDIS_URL=redis://default:password@host.redis.io:port
 ```
 
-Si Redis Cloud indique que TLS/SSL est active, utiliser `rediss://` au lieu de `redis://`.
+Use `rediss://` when the provider enables TLS/SSL. Local-memory fallback is not durable cloud storage: accounts can disappear after restart, conversations are not shared across instances and temporary values are lost.
 
-Le backend a un fallback memoire, mais il ne faut pas compter dessus en cloud:
+## 5. Deployment order
 
-- les comptes utilisateurs peuvent disparaitre au redemarrage;
-- les conversations ne sont pas partagees entre instances;
-- le cache est perdu.
+1. Push the working branch to GitHub.
+2. Check MongoDB Atlas and Redis.
+3. Deploy the Render backend and check `/health`.
+4. Deploy the Vercel frontend with `NEXT_PUBLIC_BACKEND_URL`.
+5. Add the frontend URL to Render's `BACKEND_CORS_ORIGINS`.
+6. Test registration, login, ingestion, upload and chat.
 
-## 5. Ordre de deploiement
+## 6. CI/CD
 
-1. Pousser le repo sur GitHub.
-2. Verifier MongoDB Atlas et Redis.
-3. Deployer le backend Render.
-4. Tester `/health`.
-5. Deployer le frontend Vercel avec `NEXT_PUBLIC_BACKEND_URL`.
-6. Mettre l'URL Vercel dans `BACKEND_CORS_ORIGINS` cote Render.
-7. Tester register, login, ingest, upload, chat.
+`.github/workflows/ci.yml` runs backend tests and a Next.js build for configured push/pull-request events targeting `main`.
 
-## 6. CI/CD recommande
+Use a working branch, open a pull request, wait for successful checks and merge when reviewed. Git-connected Vercel/Render deployments should use the intended production branch. When available, Render's **After CI Checks Pass** auto-deploy setting waits for checks; **On Commit** deploys without that wait. Vercel can create pull-request previews and production deployments from the configured branch.
 
-Le workflow GitHub Actions `.github/workflows/ci.yml` verifie chaque push et pull request vers `main`:
+## Follow-up improvements
 
-- tests backend Python;
-- build frontend Next.js.
-
-Configuration conseillee:
-
-1. Pousser une branche de travail.
-2. Ouvrir une pull request vers `main`.
-3. Attendre que GitHub Actions soit vert.
-4. Merger dans `main`.
-5. Vercel redeploie le frontend depuis Git.
-6. Render redeploie le backend depuis Git.
-
-Dans Render, regler le backend sur:
-
-```text
-Auto-Deploy: After CI Checks Pass
-```
-
-Ainsi, Render attend que GitHub Actions reussisse avant de deployer le backend.
-Si tu veux deployer plus vite pendant le developpement, tu peux garder:
-
-```text
-Auto-Deploy: On Commit
-```
-
-Vercel lance aussi ses deployements automatiquement depuis Git. Chaque pull request obtient une preview, puis `main` devient la production.
-
-## Points a ameliorer ensuite
-
-- Stocker les fichiers uploades dans un stockage objet durable: Cloudflare R2, S3, Supabase Storage.
-- Ajouter une route d'admin protegee pour verifier les index MongoDB.
-- Desactiver les modeles trop lourds si le quota HuggingFace gratuit est limite.
+- Move uploads to durable object storage such as R2, S3 or Supabase Storage.
+- Add a protected administrator view for index diagnostics.
+- Choose generation models that fit the account's available quota; model availability and plan limits require provider verification.

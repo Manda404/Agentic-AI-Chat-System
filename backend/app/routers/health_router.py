@@ -1,12 +1,4 @@
-"""
-Endpoint `/health` : sonde de supervision (health check).
-
-Retourne l'état de l'application ET de ses dépendances externes
-(Redis, MongoDB Atlas), sans nécessiter d'authentification. C'est ce
-que le frontend interroge en continu pour afficher les pastilles
-"online/offline" (backend, redis, mongodb, model) dans son cockpit.
-Volontairement exempté du rate limiting (voir `RateLimitMiddleware`).
-"""
+"""Public /health probe reporting application, Redis and MongoDB status. The frontend uses it for dependency indicators. It is exempt from rate limiting and does not test LLM credentials or quota."""
 
 from fastapi import APIRouter, Depends
 
@@ -23,7 +15,7 @@ def health(
     memory_service: RedisMemoryService = Depends(get_memory_service),
     search_service: SearchService = Depends(get_search_service),
 ) -> dict[str,object]:
-    """Renvoie un instantané de l'état du backend et de ses dépendances."""
+    """Return a snapshot of backend and dependency status."""
     logger.bind(
         redis_connected=memory_service.using_redis,
         mongodb_connected=search_service.available,

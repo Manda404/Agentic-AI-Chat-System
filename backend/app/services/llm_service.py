@@ -1,18 +1,4 @@
-"""
-Service d'accès au LLM, via le "HuggingFace Router" (API compatible OpenAI).
-
-Le router HuggingFace redirige un même client OpenAI vers différents
-modèles hébergés sur HuggingFace, selon le nom de modèle demandé. Ce
-service choisit automatiquement le modèle le plus adapté à la tâche
-(`ModelCapability`) : résumé/raisonnement, génération de code, ou
-question-réponse — chacun surchageable via les variables d'environnement
-`MODEL_SUMMARIZATION`, `MODEL_CODE_GENERATION`, etc.
-
-Si Langfuse est activé (`LANGFUSE_ENABLED=true`), chaque appel notable
-est tracé (`@observe`) pour analyser prompts/réponses/latences a
-posteriori dans le dashboard Langfuse. Sinon, `@observe` devient un
-décorateur transparent qui ne change rien au comportement.
-"""
+"""LLM access through Hugging Face Router or the optional Ollama-compatible interface. Choose the configured model with optional MODEL_* capability overrides. AsyncOpenAI avoids blocking the event loop during provider requests. Optional Langfuse decorators trace calls when enabled and otherwise leave execution unchanged."""
 
 import json
 from typing import Any, Dict, List, Optional, Type, TypeVar
@@ -21,7 +7,7 @@ from openai import AsyncOpenAI
 from app.prompts import LLMPrompts
 from app.config.settings import settings
 from app.logger import logger
-from app.models.chat_models import CriticReview, PlannerDecision, SafetyReview
+from app.models.chat_models import CorrectiveRAGReview, CriticReview, PlannerDecision, SafetyReview
 from pydantic import BaseModel, ValidationError
 
 if settings.langfuse_enabled:
@@ -46,50 +32,12 @@ class ModelCapability(Enum):
     QUESTION_ANSWERING = "question_answering"
     
     
-class ModelConfig:
-    """Configuration for top 4 HuggingFace Router models"""
-    
-    MODELS = {
-        "deepseek-ai/DeepSeek-V4-Pro":{
-            "capabilities": [ModelCapability.REASONING, ModelCapability.SUMMARIZATION],
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "best_for": "Complex reasoning, analysis, and summarization",
-            "size": "862B"
-        },
-        
-        "Qwen/Qwen2.5-Coder-7B-Instruct": {
-            "capabilities": [ModelCapability.CODE_GENERATION],
-            "max_tokens": 8192,
-            "temperature": 0.2,
-            "best_for": "Code generation and programming tasks",
-            "size": "8B"
-        },
-        
-         "meta-llama/Llama-3.2-3B-Instruct": {
-            "capabilities": [ModelCapability.QUESTION_ANSWERING],
-            "max_tokens": 2048,
-            "temperature": 0.7,
-            "best_for": "Fast Q&A and simple tasks",
-            "size": "3B"
-        },
-         
-        "meta-llama/Llama-3.1-8B-Instruct": {
-            "capabilities": [ModelCapability.SUMMARIZATION, ModelCapability.QUESTION_ANSWERING],
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "best_for": "General purpose tasks and Q&A",
-            "size": "8B"
-        },
-    }
-
-
 TModel = TypeVar("TModel", bound=BaseModel)
     
 class LLMService:
     """
     LLM Service using HuggingFace Router with OpenAI-compatible API
-    Uses 4 specialized models for different tasks
+    Uses one configured model, with optional capability overrides
     """
     
     def __init__(self):
@@ -98,38 +46,29 @@ class LLMService:
         self._initialize_client()
         
     def _initialize_client(self):
-        """Crée le client OpenAI asynchrone pointé vers le HuggingFace Router (si une clé API est configurée).
+        """Create the asynchronous provider client. Hugging Face requires a configured API key; Ollama uses its configured local endpoint. Avoid synchronous HTTP calls in async graph nodes."""
 
-        Le client OFFICIEL asynchrone (`AsyncOpenAI`) est utilisé plutôt que
-        `OpenAI` : `generate()` est une méthode `async def` appelée depuis des
-        agents async eux-mêmes appelés par LangGraph — un client synchrone
-        bloquerait l'event loop pendant tout l'appel HTTP (jusqu'à
-        `LLM_TIMEOUT_SECONDS`), gelant toutes les autres requêtes en cours
-        sur le même worker.
-        """
-
-        if not settings.huggingface_api_key:
-            logger.warning("HuggingFace API key not configured")
-            return
-
-        # Initialize async OpenAI client (ne bloque pas l'event loop)
-        self.client = AsyncOpenAI(
-            base_url="https://router.huggingface.co/v1",
-            api_key=settings.huggingface_api_key,
-            timeout=settings.llm_timeout_seconds,
-        )
-        
-        if self.langfuse_enabled:
-            logger.info("HuggingFace Router client initialized with Langfuse tracing enabled")
+        if settings.llm_provider == "ollama":
+            self.client = AsyncOpenAI(
+                base_url=settings.ollama_base_url.rstrip("/") + "/v1",
+                api_key="ollama",
+                timeout=settings.llm_timeout_seconds,
+                max_retries=0,
+            )
+        elif settings.huggingface_api_key:
+            self.client = AsyncOpenAI(
+                base_url="https://router.huggingface.co/v1",
+                api_key=settings.huggingface_api_key,
+                timeout=settings.llm_timeout_seconds,
+                max_retries=0,
+            )
         else:
-            logger.info("HuggingFace Router client initialized (Langfuse disabled)")
-            
+            logger.warning("HUGGINGFACE_API_KEY is not configured.")
+
     def get_model_for_capability(self, capability: ModelCapability) -> str:
-        """
-        Choisit le nom de modèle HuggingFace à utiliser pour une capacité donnée
-        (résumé, code, Q&A, raisonnement) : d'abord la variable d'environnement
-        dédiée si elle est définie, sinon un modèle par défaut codé en dur.
-        """
+        """Use the explicit Hugging Face capability override or HUGGINGFACE_MODEL. The optional Ollama backend uses OLLAMA_MODEL."""
+        if settings.llm_provider == "ollama":
+            return settings.ollama_model
         capability_models = {
             ModelCapability.SUMMARIZATION: settings.model_summarization,
             ModelCapability.CODE_GENERATION: settings.model_code_generation,
@@ -142,18 +81,9 @@ class LLMService:
             logger.info(f"Using custom model for {capability.value}: {custom_model}")
             return custom_model
         
-        default_models = {
-            ModelCapability.SUMMARIZATION: "deepseek-ai/DeepSeek-V4-Pro",
-            ModelCapability.CODE_GENERATION: "Qwen/Qwen2.5-Coder-7B-Instruct",
-            ModelCapability.QUESTION_ANSWERING: "meta-llama/Llama-3.2-3B-Instruct",
-            ModelCapability.REASONING: "deepseek-ai/DeepSeek-V4-Pro",
-        }
-        
-        model = default_models.get(capability, "meta-llama/Llama-3.1-8B-Instruct")
-        logger.info(f"Using default model for {capability.value}: {model}")
-        return model
-    
-    
+        # One configured general model with capability overrides only when needed.
+        return settings.huggingface_model
+
     @observe(name="llm_generate")
     async def generate(
         self,
@@ -164,29 +94,15 @@ class LLMService:
         capability: Optional[ModelCapability] = None,
         ) -> str:
         
-        """
-        Point d'entrée bas niveau : envoie un prompt au LLM et retourne le texte généré.
-        Toutes les autres méthodes (summarize, answer_question, grounded_answer,
-        reason, generate_code) passent par ici après avoir construit leur prompt.
-
-        Args:
-            prompt: Le prompt final déjà formaté (voir `app.prompts.LLMPrompts`)
-            model: Nom de modèle explicite (prioritaire sur `capability`)
-            max_tokens: Nombre maximum de tokens générés
-            temperature: Température d'échantillonnage (0 = déterministe)
-            capability: Capacité utilisée pour sélectionner un modèle automatiquement
-
-        Returns:
-            Le texte généré par le modèle (chaîne vide si la réponse est vide)
-        """
+        """Send a formatted prompt and return generated text, or an empty string for empty content. An explicit model overrides capability-based selection; max_tokens and temperature control generation. Higher-level operations build prompts then delegate here."""
 
         if not self.client:
-            raise RuntimeError("HuggingFace Router client not initialized. Check HF_TOKEN.")
+            raise RuntimeError("LLM client unavailable. Check LLM_PROVIDER and its configuration.")
 
         if not model and capability:
             model = self.get_model_for_capability(capability)
         elif not model:
-            model = "meta-llama/Llama-3.1-8B-Instruct"
+            model = self.get_model_for_capability(ModelCapability.QUESTION_ANSWERING)
 
         logger.bind(model=model, temperature=temperature, max_tokens=max_tokens).info(
             "Generating with HuggingFace Router"
@@ -214,7 +130,7 @@ class LLMService:
             raise
         
     async def summarize(self,text:str,context:str="") -> str:
-        """Summarize text using DeepSeek-V4-Pro (best for reasoning/summarization)"""
+        """Summarize text using the configured model"""
         prompt = LLMPrompts.summarization(text=text, context=context)
         
         return await self.generate(
@@ -225,7 +141,7 @@ class LLMService:
         )
         
     async def generate_code(self, description: str, language: str = "python") -> str:
-        """Generate code using Qwen2.5-Coder (best for code generation)"""
+        """Generate code using the configured model"""
         prompt = LLMPrompts.code_generation(description=description, language=language)
         
         return await self.generate(
@@ -236,7 +152,7 @@ class LLMService:
         )
 
     async def answer_question(self, question: str, context: str = "") -> str:
-        """Answer a question using Llama-3.2-3B (fast Q&A)"""
+        """Answer using the configured model"""
         prompt = LLMPrompts.question_answering(question=question, context=context)
         
         return await self.generate(
@@ -266,12 +182,25 @@ class LLMService:
             temperature=0.2,
         )
 
+    async def documentary_step(self, question, history, passages, observations, budget):
+        """Generate one action or answer per call and validate it before execution."""
+        from app.models.documentary_models import DocumentaryAction
+        from app.prompts.documentary_prompt import documentary_prompt
+
+        raw = await self.generate(
+            prompt=documentary_prompt(question, history, passages, observations, budget),
+            capability=ModelCapability.QUESTION_ANSWERING,
+            max_tokens=1800,
+            temperature=0.0,
+        )
+        return DocumentaryAction.model_validate_json(raw)
+
     async def plan(
         self,
         user_message: str,
         conversation_history: str = "",
     ) -> PlannerDecision:
-        """Produit un plan JSON validé pour le workflow agentique."""
+        """Generate a validated JSON plan for the experimental workflow."""
         prompt = LLMPrompts.planner(
             user_message=user_message,
             conversation_history=conversation_history,
@@ -290,7 +219,7 @@ class LLMService:
         draft_answer: str,
         sources: str = "",
     ) -> CriticReview:
-        """Évalue une réponse provisoire avec un format JSON validé."""
+        """Assess a candidate answer using a validated JSON schema."""
         prompt = LLMPrompts.critic_review(
             user_message=user_message,
             draft_answer=draft_answer,
@@ -304,8 +233,26 @@ class LLMService:
         )
         return self._parse_json_model(raw, CriticReview)
 
+    async def corrective_rag_review(
+        self,
+        user_message: str,
+        documents: str,
+    ) -> CorrectiveRAGReview:
+        """Assess retrieved documents and propose a query correction when needed."""
+        prompt = LLMPrompts.corrective_rag_review(
+            user_message=user_message,
+            documents=documents,
+        )
+        raw = await self.generate(
+            prompt=prompt,
+            capability=ModelCapability.REASONING,
+            max_tokens=900,
+            temperature=0.0,
+        )
+        return self._parse_json_model(raw, CorrectiveRAGReview)
+
     async def safety_review(self, answer: str) -> SafetyReview:
-        """Passe une réponse dans un garde-fou sécurité JSON."""
+        """Review an answer using the JSON safety contract."""
         prompt = LLMPrompts.safety_review(answer=answer)
         raw = await self.generate(
             prompt=prompt,
@@ -316,7 +263,7 @@ class LLMService:
         return self._parse_json_model(raw, SafetyReview)
 
     async def compress_context(self, user_message: str, documents: str, max_chars: int = 4000) -> str:
-        """Compresse un contexte documentaire avant génération RAG."""
+        """Compress documentary context before grounded generation."""
         prompt = LLMPrompts.compress_context(
             user_message=user_message,
             documents=documents,
@@ -330,7 +277,7 @@ class LLMService:
         )
 
     async def rerank_with_llm(self, user_message: str, documents: str) -> str:
-        """Point d'extension pour un futur reranking LLM/cross-encoder."""
+        """Extension point for future LLM or cross-encoder reranking."""
         prompt = LLMPrompts.rerank(user_message=user_message, documents=documents)
         return await self.generate(
             prompt=prompt,
@@ -340,7 +287,7 @@ class LLMService:
         )
 
     async def reason(self, problem: str) -> str:
-        """Solve a complex reasoning problem using DeepSeek-V4-Pro"""
+        """Reason using the configured model"""
         prompt = LLMPrompts.reasoning(problem=problem)
         
         return await self.generate(
@@ -351,7 +298,7 @@ class LLMService:
         )
 
     def _parse_json_model(self, raw: str, model: Type[TModel]) -> TModel:
-        """Parse un JSON LLM même si le modèle entoure la réponse de texte."""
+        """Parse legacy LLM JSON even when surrounded by other text."""
         text = raw.strip()
         try:
             return model.model_validate_json(text)
@@ -369,16 +316,3 @@ class LLMService:
                     "Structured LLM JSON parsing failed."
                 )
         raise ValueError(f"LLM did not return valid {model.__name__} JSON.")
-
-    def list_available_models(self) -> List[Dict]:
-        """List all 4 available models with their capabilities"""
-        return [
-            {
-                "name": name,
-                "capabilities": [cap.value for cap in config["capabilities"]],
-                "best_for": config["best_for"],
-                "size": config["size"],
-                "max_tokens": config["max_tokens"],
-            }
-            for name, config in ModelConfig.MODELS.items()
-        ]

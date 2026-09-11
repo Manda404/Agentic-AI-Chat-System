@@ -1,4 +1,4 @@
-"""Cas d'évaluation simples pour le chat agentique."""
+"""Functional evaluation cases for agentic chat."""
 
 from dataclasses import dataclass
 
@@ -10,6 +10,8 @@ class EvaluationCase:
     expected_route: str
     expect_sources: bool = False
     expect_critic_passed: bool | None = None
+    mode: str = "auto"
+    expected_status: str = "answered"
 
 
 DEFAULT_EVALUATION_CASES = [
@@ -21,8 +23,8 @@ DEFAULT_EVALUATION_CASES = [
         expect_sources=True,
         expect_critic_passed=True,
     ),
-    EvaluationCase(name="out_of_scope", message="What is in a document that was never ingested?", expected_route="rag"),
-    EvaluationCase(name="summary", message="Summarize Redis caching", expected_route="direct_answer"),
-    EvaluationCase(name="correction", message="Please review and correct this answer", expected_route="direct_answer"),
-    EvaluationCase(name="ambiguous", message="Can you help?", expected_route="direct_answer"),
+    EvaluationCase(name="out_of_scope", message="What is in a document that was never ingested?", expected_route="rag", expected_status="abstained"),
+    EvaluationCase(name="summary", message="Summarize Redis caching", expected_route="direct_answer", mode="general"),
+    EvaluationCase(name="correction", message="Correct this text: Redis are a cache.", expected_route="direct_answer"),
+    EvaluationCase(name="ambiguous", message="Can you help?", expected_route="greeting"),
 ]

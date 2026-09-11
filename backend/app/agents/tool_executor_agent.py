@@ -1,4 +1,4 @@
-"""Exécuteur borné des outils explicitement autorisés par le workflow."""
+"""Bounded execution of tools explicitly authorized by the workflow."""
 
 from app.logger import logger
 from app.models.chat_models import AgentResult
@@ -7,7 +7,7 @@ from app.tools import CalculatorTool, DocumentListTool
 
 
 class ToolExecutorAgent:
-    """Exécute un outil déterministe selon la route validée par ToolRouterAgent."""
+    """Execute the deterministic tool selected by the local router."""
 
     def __init__(self, calculator: CalculatorTool, document_list: DocumentListTool):
         self._tools = {
@@ -18,7 +18,7 @@ class ToolExecutorAgent:
     async def run(self, state: GraphState) -> AgentResult:
         tool = self._tools.get(state.route or "")
         if tool is None:
-            output = "Aucun outil autorisé ne correspond à cette route."
+            output = "No authorized tool matches this route."
             state.draft_answer = output
             return AgentResult(
                 agent="tool_executor",

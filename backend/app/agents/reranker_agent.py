@@ -1,14 +1,4 @@
-"""
-Agent de reranking documentaire.
-
-Dans un RAG production-grade, le retrieval brut est rarement suffisant :
-il faut filtrer, réordonner et limiter les documents avant de les envoyer au
-LLM. Le score de base reste lexical (léger, sans dépendance), mais si un
-`EmbeddingService` est configuré (voir `HuggingFaceEmbeddingService`), il est
-combiné à une similarité cosinus calculée sur des embeddings réels. Tout
-échec côté embeddings (quota, modèle indisponible, timeout) retombe
-silencieusement sur le score lexical seul.
-"""
+"""Document reranking after initial retrieval. Filter, reorder and limit candidates using lexical signals, optionally enriched by embedding cosine similarity. Stored embeddings are reused and provider failures fall back to lexical scoring."""
 
 import math
 import re
@@ -22,7 +12,7 @@ SEMANTIC_WEIGHT = 2.0
 
 
 class RerankerAgent:
-    """Filtre et réordonne les résultats, avec repli lexical garanti."""
+    """Filter and reorder results with lexical fallback."""
 
     def __init__(
         self,
@@ -30,25 +20,19 @@ class RerankerAgent:
         max_results: int = 5,
         embedding_service: EmbeddingService | None = None,
     ):
-        """Définit le score minimal accepté, le nombre final de documents RAG,
-        et un service d'embeddings optionnel pour le scoring sémantique."""
+        """Configure the minimum accepted score, final document count and optional embedding service for semantic scoring."""
         self.min_score = min_score
         self.max_results = max_results
         self.embedding_service = embedding_service
 
     async def run(self, state: GraphState) -> AgentResult:
-        """
-        Calcule un score reranké puis écrit `state.reranked_results`.
-
-        Le score combine le score full-text (MongoDB Atlas Search), un bonus lexical si les mots
-        de la question apparaissent dans le titre ou le snippet, et une
-        similarité sémantique (embeddings) si disponible.
-        """
-        query_terms = self._terms(state.user_message)
+        """Compute ranking scores and populate state.reranked_results using retrieval score, lexical overlap and optional semantic similarity."""
+        query = state.metadata.get("retrieval_query") or state.user_message
+        query_terms = self._terms(query)
         candidates = [item for item in state.search_results if item.score >= self.min_score]
         lexical_scores = [self._lexical_score(item, query_terms) for item in candidates]
 
-        semantic_scores, semantic_used = await self._semantic_scores(state.user_message, candidates)
+        semantic_scores, semantic_used = await self._semantic_scores(query, candidates)
 
         scored = [
             (lexical + (semantic_scores[i] * SEMANTIC_WEIGHT if semantic_scores else 0.0), item)
@@ -94,7 +78,7 @@ class RerankerAgent:
     async def _semantic_scores(
         self, user_message: str, candidates: list[SearchResult]
     ) -> tuple[list[float], bool]:
-        """Calcule une similarité cosinus par document si un embedding service est branché."""
+        """Compute per-document cosine similarity when an embedding service is configured."""
         if not self.embedding_service or not candidates:
             return [], False
         try:
@@ -108,7 +92,7 @@ class RerankerAgent:
             return [], False
 
     async def _document_embeddings(self, candidates: list[SearchResult]) -> list[list[float]]:
-        """Réutilise les embeddings stockés et ne calcule que ceux qui manquent."""
+        """Reuse stored embeddings and compute only missing vectors."""
         embeddings: list[list[float] | None] = [item.embedding for item in candidates]
         missing_indexes = [index for index, embedding in enumerate(embeddings) if not embedding]
         if missing_indexes:
@@ -119,7 +103,9 @@ class RerankerAgent:
         return [embedding or [] for embedding in embeddings]
 
     def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
-        """Similarité cosinus pure Python, sans dépendance numpy."""
+        """Compute cosine similarity in Python without numpy."""
+        if not a or len(a) != len(b):
+            raise ValueError("Incompatible embedding dimensions; re-ingest with the configured model.")
         dot = sum(x * y for x, y in zip(a, b))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(y * y for y in b))
@@ -128,11 +114,11 @@ class RerankerAgent:
         return dot / (norm_a * norm_b)
 
     def _terms(self, text: str) -> set[str]:
-        """Extrait des termes simples de la question pour calculer un recouvrement lexical."""
+        """Extract query terms for lexical overlap scoring."""
         return {term for term in re.findall(r"[a-zA-Z0-9_]+", text.lower()) if len(term) > 2}
 
     def _lexical_score(self, item: SearchResult, query_terms: set[str]) -> float:
-        """Combine score de recherche et présence des termes utilisateur dans le document."""
+        """Combine the retrieval score with query-term occurrences in the document."""
         text = f"{item.title} {item.snippet}".lower()
         overlap = sum(1 for term in query_terms if term in text)
         return float(item.score) + overlap * 0.25

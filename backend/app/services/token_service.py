@@ -1,11 +1,4 @@
-"""
-Création et décodage des tokens JWT utilisés pour authentifier les
-requêtes (`Authorization: Bearer <token>`).
-
-Attention : il n'y a pas de mécanisme de révocation. Un token reste
-valide jusqu'à son expiration (`AUTH_TOKEN_EXPIRY_MINUTES`), même si
-l'utilisateur se déconnecte côté frontend.
-"""
+"""Create and decode JWT bearer tokens for request authentication. There is no token revocation: a token remains valid until expiry even after frontend logout."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -16,10 +9,10 @@ from app.config.settings import settings
 from app.logger import logger
 
 class TokenService:
-    """Encapsule la signature/vérification des JWT avec le secret applicatif."""
+    """Sign and verify JWTs with the application secret."""
 
     def create_access_token(self, subject: str) -> str:
-        """Génère un JWT signé dont le sujet (`sub`) est l'email de l'utilisateur."""
+        """Generate a signed JWT whose subject is the user's email."""
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.auth_token_expiry_minutes)
         payload: Dict[str, Any] = {
             "sub": subject,
@@ -31,5 +24,5 @@ class TokenService:
         return jwt.encode(payload, settings.auth_secret_key, algorithm=settings.auth_algorithm)
 
     def decode_access_token(self, token: str) -> Dict[str, Any]:
-        """Décode et valide la signature/expiration d'un JWT. Lève une exception si invalide."""
+        """Validate JWT signature and expiry; raise an exception for invalid tokens."""
         return jwt.decode(token, settings.auth_secret_key, algorithms=[settings.auth_algorithm])

@@ -1,4 +1,4 @@
-"""Nœud de validation des citations après génération RAG."""
+"""Citation validation following grounded generation."""
 
 from app.logger import logger
 from app.models.chat_models import AgentResult
@@ -7,13 +7,13 @@ from app.tools import CitationValidatorTool
 
 
 class CitationValidatorAgent:
-    """Exécute CitationValidatorTool et expose son verdict au critic."""
+    """Run CitationValidatorTool and expose its verdict to the local critic."""
 
     def __init__(self, tool: CitationValidatorTool):
         self.tool = tool
 
     async def run(self, state: GraphState) -> AgentResult:
-        documents = state.reranked_results or state.search_results
+        documents = state.selected_documents
         result = self.tool.run(state.draft_answer or state.rag_output or "", documents)
         state.tool_results.append(result)
         state.evaluation["citation_validation"] = {

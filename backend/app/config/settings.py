@@ -1,18 +1,9 @@
-"""
-Configuration centralisée de l'application, lue depuis les variables
-d'environnement (`.env`, chargé par `load_dotenv()`).
-
-C'est le SEUL endroit du projet où `os.getenv(...)` doit être appelé :
-tout le reste du code importe l'objet `settings` déjà construit.
-Chaque champ a une valeur par défaut raisonnable pour le développement
-local ; voir `backend/.env.example` pour la liste complète et des
-commentaires sur chaque variable.
-"""
+"""Central application configuration loaded from environment variables and .env through load_dotenv. Keep os.getenv calls here; other modules import the settings object. See backend/.env.example for development defaults and field descriptions."""
 
 import os
 from typing import List, Literal
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
@@ -21,7 +12,7 @@ IS_LOCAL_ENV = APP_ENV_VALUE.lower() in {"development", "local", "test"}
 
 
 class Settings(BaseModel):
-    """Toutes les variables de configuration du backend, avec leurs valeurs par défaut."""
+    """Backend configuration variables and their defaults."""
     app_name: str = os.getenv("APP_NAME", "Agentic RAG Platform Backend")
     app_env: str = APP_ENV_VALUE
     api_prefix: str = os.getenv("API_PREFIX", "/api/v1")
@@ -33,18 +24,20 @@ class Settings(BaseModel):
         ).split(",")
         if item.strip()
     ]
-    # En développement uniquement, autorise aussi le frontend lorsqu'il est
-    # ouvert via l'adresse privée de la machine (Wi-Fi/Ethernet).
+    # In development only, also allow the frontend when opened
+    # through the machine's private Wi-Fi/Ethernet address.
     backend_cors_dev_origin_regex: str = os.getenv(
         "BACKEND_CORS_DEV_ORIGIN_REGEX",
         r"^https?://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?::\d+)?$",
     )
     
-    llm_provider: Literal["ollama", "huggingface"] = os.getenv("LLM_PROVIDER", "ollama") 
+    llm_provider: Literal["ollama", "huggingface"] = os.getenv("LLM_PROVIDER", "huggingface")
     
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
     
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
+
     huggingface_api_key: str = os.getenv("HUGGINGFACE_API_KEY", "")
     huggingface_model: str = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
     
@@ -98,18 +91,11 @@ class Settings(BaseModel):
     langfuse_user_id: str = os.getenv("LANGFUSE_USER_ID", "local-dev")
     langfuse_enabled: bool = os.getenv("LANGFUSE_ENABLED", "false").lower() == "true"
 
-    langgraph_checkpoint_enabled: bool = os.getenv("LANGGRAPH_CHECKPOINT_ENABLED", "false").lower() == "true"
-    langgraph_checkpoint_backend: Literal["memory"] = os.getenv("LANGGRAPH_CHECKPOINT_BACKEND", "memory")
     max_user_message_chars: int = int(os.getenv("MAX_USER_MESSAGE_CHARS", "8000"))
     max_rag_context_chars: int = int(os.getenv("MAX_RAG_CONTEXT_CHARS", "4000"))
+    documentary_agent_timeout_seconds: float = Field(default=float(os.getenv("DOCUMENTARY_AGENT_TIMEOUT_SECONDS", "90")), gt=0, le=300)
     max_rag_documents: int = int(os.getenv("MAX_RAG_DOCUMENTS", "5"))
     rate_limit_requests_per_minute: int = int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"))
-    critic_enabled: bool = os.getenv("CRITIC_ENABLED", "true").lower() == "true"
-    critic_routes: str = os.getenv(
-        "CRITIC_ROUTES",
-        "rag,direct_answer,summary,analysis,correction,planning",
-    )
-    safety_enabled: bool = os.getenv("SAFETY_ENABLED", "true").lower() == "true"
     citation_support_required: bool = os.getenv("CITATION_SUPPORT_REQUIRED", "false").lower() == "true"
     citation_support_min_overlap: int = int(os.getenv("CITATION_SUPPORT_MIN_OVERLAP", "1"))
     llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))

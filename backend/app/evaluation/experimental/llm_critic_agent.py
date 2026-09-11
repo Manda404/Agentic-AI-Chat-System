@@ -1,11 +1,4 @@
-"""
-Agent de critique LLM avec fallback déterministe.
-
-Après une réponse provisoire (`draft_answer`, `rag_output` ou `summary_output`),
-ce module vérifie si la réponse est pertinente, claire et suffisamment ancrée
-dans les sources. Il utilise le LLM quand c'est possible, mais garde le
-`CriticAgent` déterministe comme filet de sécurité.
-"""
+"""Experimental LLM critic with local fallback. Evaluate the relevance, clarity and grounding of a draft, RAG output or direct answer; use CriticAgent when the provider fails."""
 
 from app.agents.critic_agent import CriticAgent
 from app.logger import logger
@@ -15,25 +8,19 @@ from app.state import GraphState
 
 
 class LLMCriticAgent:
-    """Évalue une réponse provisoire avec un LLM, puis fallback sur `CriticAgent`."""
+    """Assess a candidate with an LLM and fall back to CriticAgent."""
 
     def __init__(self, llm_service: LLMService):
-        """Prépare le critic LLM et son critic de secours sans appel réseau."""
+        """Configure the LLM critic and local fallback without network calls."""
         self.llm_service = llm_service
         self.fallback_critic = CriticAgent()
 
     async def run(self, state: GraphState) -> AgentResult:
-        """
-        Produit une revue qualité structurée et l'écrit dans `GraphState`.
-
-        La réponse candidate peut provenir du RAG, du summary, de la recherche
-        ou d'un fallback. Le résultat est exposé dans `state.evaluation["critic"]`
-        et dans les champs `critic_passed`, `critic_feedback`, `critic_score`.
-        """
+        """Write a structured quality review to evaluation.critic and the critic_passed, critic_feedback and critic_score fields."""
         draft = state.draft_answer or state.rag_output or state.summary_output or state.search_output or state.final_answer or ""
         sources = state.compressed_context or state.search_output or ""
         try:
-            # Chemin nominal : revue LLM validée par le modèle Pydantic CriticReview.
+            # The LLM review is validated using the Pydantic CriticReview schema.
             review = await self.llm_service.critic_review(
                 user_message=state.user_message,
                 draft_answer=draft,
@@ -42,7 +29,7 @@ class LLMCriticAgent:
             source = "llm"
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("LLM critic failed; using deterministic fallback.")
-            # Fallback : conserver une validation minimale même sans LLM critic.
+            # Fallback: retain minimal validation without an LLM critic.
             fallback_result = await self.fallback_critic.run(state)
             review = CriticReview(
                 passed=state.critic_passed,
@@ -57,7 +44,7 @@ class LLMCriticAgent:
             source = "fallback"
 
         citation_validation = state.evaluation.get("citation_validation")
-        if state.route == "rag" and citation_validation and not citation_validation.get("passed", False):
+        if state.route in {"rag", "document_qa"} and citation_validation and not citation_validation.get("passed", False):
             citation_issue = "RAG citation validation failed."
             review = review.model_copy(
                 update={
@@ -70,11 +57,11 @@ class LLMCriticAgent:
                 }
             )
 
-        # Le workflow lit ces champs pour décider retry ou finalisation.
+        # The workflow reads these fields to choose retry or finalization.
         state.critic_passed = review.passed
         state.critic_feedback = review.feedback
         state.critic_score = review.score
-        state.evaluation["critic"] = review.model_dump()
+        state.evaluation["critic"] = {**review.model_dump(), "source": source}
 
         logger.bind(
             conversation_id=state.conversation_id,

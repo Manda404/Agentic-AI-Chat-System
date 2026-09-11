@@ -1,241 +1,198 @@
-<div align="center">
-
 # Agentic RAG Platform
 
-**Une plateforme d'assistant documentaire intelligent pour entreprises, capable de transformer des documents internes en réponses fiables, sourcées et traçables.**
+A project for **learning to build four collaborating AI agents** that answer questions using evidence from documents and the web.
 
-<img src="gitimg/Architecture-v0.png" alt="Chat Interface" width="600"/>
+The agents plan, research, draft and verify. They can request additional evidence or a targeted correction. **Hugging Face** provides the models, **LangGraph** coordinates the agents, **MongoDB Atlas** powers documentary RAG, and **Tavily** provides web search.
 
-<img src="gitimg/Architecture-v2.png" alt="System Overview" width="600"/>
+## 1. Understand the four agents
 
-</div>
+| Agent | Code class | Responsibility and decision |
+|---|---|---|
+| Planner | `PlanningAgent` | Defines an objective and one to four subquestions; sends its plan to the researcher |
+| Researcher | `DocumentaryAgent` | Chooses searches and passage reads; shares evidence and a draft, asks for clarification or abstains |
+| Synthesizer | `SynthesisAgent` | Writes an answer with citations; can ask the researcher for missing evidence |
+| Verifier | `VerificationAgent` | Checks the answer against the evidence; approves, rejects or requests a targeted correction |
 
-## Problème Business
+The agents share the configured Hugging Face service, with distinct prompts and structured decisions. Multiple agents do not require multiple models. A four-node LangGraph subgraph coordinates their exchanges.
 
-Les entreprises accumulent de plus en plus de documents internes : procédures, rapports, politiques RH, contrats, supports de formation, documentation produit, fichiers CSV, PDF réglementaires ou bases de connaissance métier.
-
-Le problème est que cette connaissance reste souvent difficile à exploiter :
-
-- les collaborateurs perdent du temps à chercher l'information fiable ;
-- les réponses varient selon la personne, le document consulté ou le niveau d'expertise ;
-- les assistants IA classiques peuvent produire des réponses non sourcées ou inventées ;
-- les équipes métiers ont besoin de preuves, de citations et de traçabilité ;
-- les équipes techniques ont besoin d'observer ce que fait l'IA pour diagnostiquer, corriger et améliorer le système.
-
-Ce projet répond donc à une question business simple :
-
-**Comment permettre aux équipes d'une entreprise de poser des questions sur leurs documents internes et d'obtenir rapidement une réponse fiable, sourcée, contrôlée et traçable ?**
-
-L'objectif n'est pas seulement de construire un chatbot. L'objectif est de réduire le temps perdu à chercher l'information, d'améliorer la qualité des réponses internes et de rendre l'utilisation de l'IA plus fiable dans des contextes où les sources comptent.
-
-## Solution Proposée
-
-Agentic RAG Platform transforme une base documentaire interne en assistant conversationnel capable de :
-
-- **Répondre à des questions utilisateur** avec une interface web simple.
-- **Exploiter des documents internes** grâce à un pipeline RAG hybride basé sur MongoDB Atlas : full-text search + recherche vectorielle.
-- **Router intelligemment les demandes** entre réponse directe, calcul, inventaire documentaire ou recherche RAG.
-- **Produire des réponses sourcées** à partir des passages retrouvés dans les documents.
-- **Contrôler la réponse** avec un critic, une validation des citations et un safety guard.
-- **Rendre l'exécution transparente** grâce à un cockpit de debug qui affiche la route, les agents appelés, les résultats bruts, le plan, les métriques de retrieval, le critic et les informations de safety.
-
-La valeur business principale est :
-
-**moins de recherche manuelle, moins de réponses inventées, plus de confiance et plus de traçabilité dans l'utilisation de l'IA sur des connaissances internes.**
-
-## Secteurs Visés
-
-La plateforme s'adresse surtout aux organisations où la connaissance documentaire est volumineuse, critique et doit être vérifiable.
-
-**Support client, SaaS et équipes IT**
-- Assistant interne pour les agents support.
-- Recherche rapide dans les FAQ, tickets, guides produit et procédures.
-- Réponses cohérentes avec sources pour réduire le temps de résolution.
-
-**Banque, assurance et services financiers**
-- Recherche dans les procédures, politiques internes et documents de conformité.
-- Aide aux conseillers, équipes risk, audit ou compliance.
-- Besoin fort de traçabilité, de contrôle et de réponses justifiables.
-
-**Juridique, conformité et audit**
-- Analyse documentaire, recherche de clauses, obligations ou règles internes.
-- Réponses sourcées pour préparer des revues, contrôles ou audits.
-- Réduction du risque lié aux réponses non vérifiées.
-
-**Industrie, énergie et maintenance**
-- Accès rapide aux manuels techniques, fiches sécurité et procédures terrain.
-- Assistance aux équipes opérationnelles qui doivent trouver la bonne procédure au bon moment.
-- Diminution du temps de recherche dans une documentation souvent dense.
-
-**Santé, pharmacie et qualité**
-- Recherche dans des protocoles, procédures qualité, notices ou documentation réglementaire.
-- Usage pertinent pour l'assistance documentaire interne, hors diagnostic médical automatisé.
-- Secteur sensible où les sources et le contrôle sont indispensables.
-
-## Méthode De Résolution
-
-Le projet résout le problème avec un workflow multi-agent orchestré par **LangGraph** :
-
-```text
-Utilisateur
-  -> Frontend Next.js
-  -> Backend FastAPI
-  -> MemoryAgent
-  -> LLMPlannerAgent
-  -> ToolRouterAgent
-  -> Search / RAG / Direct Answer
-  -> LLMCriticAgent
-  -> SafetyGuardAgent
-  -> FinalAnswerAgent
-  -> ChatResponse
+```mermaid
+flowchart TD
+    U[User question] --> P[Planner]
+    P -->|Objective and subquestions| R[Researcher]
+    R -->|Evidence and draft| S[Synthesizer]
+    S -->|Candidate answer| V[Verifier]
+    S -.->|Missing evidence| R
+    V -.->|Additional research| R
+    V -.->|Writing correction| S
+    V -->|Approved| C[Local citation checks]
+    V -->|Rejected| A[Abstention]
+    C -->|Valid| F[Answer with sources]
+    C -->|Invalid| A
 ```
 
-La méthode est la suivante :
+Dashed arrows represent requests for additional work. **The entire team may make only one correction attempt.** If another correction is needed, the system abstains. A provider failure, timeout or invalid structured decision also prevents publication of an unverified documentary answer.
 
-1. **Comprendre la demande** : le planner LLM identifie l’intention (avec fallback déterministe si le LLM échoue).
-2. **Choisir les bons outils** : le tool router décide si la réponse doit être directe, documentaire ou RAG.
-3. **Chercher les sources** : MongoDB Atlas Search récupère les documents pertinents (full-text).
-4. **Améliorer le contexte** : retrieval hybride (full-text + Atlas Vector Search), reranking lexical + sémantique (embeddings HuggingFace) et compression de contexte.
-5. **Générer une réponse** : le RAGAgent répond à partir des documents disponibles.
-6. **Contrôler la réponse** : le critic vérifie qualité, clarté et grounding.
-7. **Sécuriser la sortie** : le safety guard masque les secrets évidents.
-8. **Retourner une réponse compatible frontend** : avec réponse finale, agents utilisés, métriques et traces debug.
+Example: the verifier notices that an answer allows two remote-work days without stating the approval conditions. It asks the researcher to find those conditions. The researcher returns another passage, the synthesizer updates the answer, and the verifier checks it again.
 
-## Architecture En Bref
+After the response, the frontend displays work messages, correction requests and evidence references under **Agent collaboration**. These are task exchanges, not the models' hidden reasoning, and they are not streamed live.
+
+## 2. Where is the RAG?
+
+Retrieval-augmented generation retrieves information, supplies it to a model as context, and produces an answer grounded in that evidence. It is part of the researcher's and synthesizer's work.
+
+The researcher has three tools. Their existing API identifiers are retained for compatibility:
+
+| Tool identifier | Purpose |
+|---|---|
+| `rechercher(query)` | Search documents indexed in MongoDB Atlas |
+| `lire_passage(passage_id)` | Read an already discovered document fragment with a fresh permission check |
+| `rechercher_web(query)` | Search public information through Tavily and return excerpts with URLs |
+
+Every document search launches text and vector retrieval **in parallel**, using the same query and permissions. Their results are then fused.
 
 ```mermaid
 flowchart LR
-  U[Utilisateur] --> F[Next.js Frontend]
-  F --> API[FastAPI Backend]
-
-  API --> AUTH[Auth Router]
-  API --> ING[Ingest Router]
-  API --> CHAT[Chat Router]
-  API --> HLT[Health Router]
-
-  CHAT --> WF[LangGraph ChatWorkflow]
-
-  WF --> MEM[MemoryAgent]
-  MEM --> PL[LLMPlannerAgent]
-  PL --> TR[ToolRouterAgent]
-
-  TR -->|greeting| G[Greeting Node]
-  TR -->|direct / summary| SUM[SummaryAgent]
-  TR -->|calculation / document_list| TOOL[ToolExecutorAgent]
-  TR -->|document_qa / rag| SA[SearchAgent]
-
-  SA --> HY[HybridRetrieverAgent]
-  HY --> RR[RerankerAgent]
-  RR --> CC[ContextCompressionAgent]
-  CC --> RAG[RAGAgent]
-
-  RAG --> CV[CitationValidatorAgent structural + lexical]
-  CV --> CR[LLMCriticAgent]
-  G --> CR
-  SUM --> CR
-  TOOL --> CR
-
-  CR --> SG[SafetyGuardAgent]
-  SG --> FA[FinalAnswerAgent]
-  FA --> CHAT
-  CHAT --> API
-  API --> F
-
-  ING --> POL[Document Access Policy]
-  POL --> EMB[HuggingFace Embeddings]
-  POL --> MDB[(MongoDB Atlas Documents)]
-
-  SA --> MDB
-  HY --> VS[MongoVectorStore]
-  VS --> EMB
-  VS --> MDB
-
-  MEM --> RD[(Redis Memory / Cache / Users / Rate Limit)]
-  AUTH --> RD
-  CHAT --> RD
-
-  PL --> LLM[LLMService]
-  SUM --> LLM
-  RAG --> LLM
-  CR --> LLM
-  SG --> LLM
-  LLM --> HF[HuggingFace Router / Ollama Config]
-
-  WF -. optional traces .-> LF[(Langfuse)]
-  LLM -. optional traces .-> LF
+    Q[Research query] --> T[Text search]
+    Q --> E[Query embedding]
+    E --> V[Vector search]
+    T --> F[RRF fusion and deduplication]
+    V --> F
+    F --> R[Passage reranking]
+    R --> C[Excerpt compression]
+    C --> A[Evidence returned to researcher]
 ```
 
-**Backend**
-- FastAPI pour l’API HTTP.
-- LangGraph pour l’orchestration multi-agent.
-- Redis Cloud pour l’historique conversationnel, le cache, les comptes et le rate limiting partagé.
-- MongoDB Atlas (Atlas Search + Atlas Vector Search) pour la recherche documentaire hybride (full-text + sémantique).
-- Cloisonnement documentaire configurable (`shared` localement, `owner` conseillé hors dev) avec visibilité `shared/private`.
-- HuggingFace Router compatible OpenAI pour les appels LLM.
-- Loguru et Langfuse optionnel pour l’observabilité.
+Text search matches words and expressions; vector search finds passages with similar meaning. Reciprocal Rank Fusion (RRF) combines the rankings. If one branch fails, the other remains usable and degraded operation is reported. If both fail, the system reports an outage rather than claiming that no documents exist.
 
-**Frontend**
-- Next.js / React / TypeScript.
-- Interface de chat.
-- Cockpit de debug : route, agents, sorties brutes, plan, critic, safety, retrieval metrics.
+**These RAG stages are technical components, not additional autonomous agents.** Their historical class names are `SearchAgent`, `HybridRetrieverAgent`, `RerankerAgent` and `ContextCompressionAgent`.
 
-**Agents Principaux**
-- `MemoryAgent`
-- `LLMPlannerAgent`
-- `ToolRouterAgent`
-- `SearchAgent`
-- `HybridRetrieverAgent`
-- `RerankerAgent`
-- `ContextCompressionAgent`
-- `RAGAgent`
-- `LLMCriticAgent`
-- `SafetyGuardAgent`
-- `FinalAnswerAgent`
+## 3. Summaries, checks and reference workflows
 
-## Ce Que Le Projet Démontre
+Not every question requires the whole team.
 
-- Une architecture multi-agent claire et extensible.
-- Un workflow LangGraph réel, pas seulement une orchestration manuelle.
-- Un RAG progressif : recherche hybride avec fusion RRF, reranking, compression extractive, réponse sourcée.
-- Une compatibilité API stable avec `/api/v1/chat`.
-- Des champs debug utiles : `plan`, `critic_score`, `retrieval_metrics`, `safety_feedback`, `trace_id`.
-- Une base pédagogique pour aller vers un système agentique plus robuste.
+| Component | Current use |
+|---|---|
+| `SummaryAgent` | Summaries or transformations of supplied text, and general answers without retrieval |
+| `ToolExecutorAgent` | Arithmetic and indexed-document inventory, without LLM generation |
+| `CitationValidatorAgent` | Citation presence and range checks |
+| `CriticAgent` | Local publication-contract checks, separate from the LLM verifier |
+| `FinalAnswerAgent` | Publishes an approved answer, clarification or abstention |
+| `SafetyGuardAgent` | Masks certain recognizable secrets in the final answer |
+| `RAGAgent` | Grounded generation in the simple `baseline` comparison workflow |
 
-## Démarrage Rapide
+“Summarize this text: …” can use `SummaryAgent`. “Summarize my indexed PDF” uses the documentary team to retrieve and synthesize passages.
 
-1. Copier `backend/.env.example` vers `backend/.env` et renseigner les clés nécessaires : clé HuggingFace, URI Redis Cloud (`REDIS_URL`) et URI MongoDB Atlas (`MONGODB_URI`). Aucun conteneur local n'est requis, Redis et MongoDB tournent tous les deux en cloud (tiers gratuits).
-2. Installer les dépendances (backend + frontend) :
+The older `LLMPlannerAgent`, `CorrectiveRAGAgent` and `LLMCriticAgent` remain in `backend/app/evaluation/experimental/`; they do not participate in the current chat. Memory and routing are handled by services and local rules.
 
-```bash
+## 4. Budgets and modes
+
+| Limit | Value |
+|---|---:|
+| Team-wide correction attempts | At most 1 |
+| Document and web searches | 2 per research pass; at most 4 overall |
+| Tool calls, including searches and passage reads | At most 6 overall |
+| LLM calls, including planning and correction | At most 13 overall |
+| Team duration | 90 seconds by default |
+
+A `rechercher` call counts as **one search**, even though it runs text and vector branches in parallel. Embedding calls are separate from the LLM counter. Failed attempts consume budget. A successful path with one search and no correction normally uses five LLM calls; thirteen is a ceiling, not a target.
+
+- **`auto`**: the team may use documents and Tavily when configured; simple requests take a direct route.
+- **`documents`**: documentary workflow with web search blocked by code.
+- **`general`**: a general answer without document or web retrieval.
+
+Tavily supplements RAG; it does not replace MongoDB or automatically ingest web results into the corpus.
+
+## 5. Technology and repository layout
+
+| Element | Technology or location |
+|---|---|
+| Chat, uploads and diagnostics | Next.js — `frontend/` |
+| API and authentication | FastAPI — `backend/app/routers/` |
+| Main orchestration | LangGraph — `backend/app/workflows/chat_workflow.py` |
+| Planning, synthesis, verification and collaboration | `backend/app/agents/documentary_team.py` |
+| Research agent | `backend/app/agents/documentary_agent.py` |
+| Retrieval pipeline shared with evaluation | `backend/app/services/retrieval_pipeline.py` |
+| Generation and embeddings | Hugging Face |
+| Documents, vectors and indexes | MongoDB Atlas |
+| Web search | Tavily |
+| History and authentication storage | Redis |
+
+PDF/CSV ingestion extracts text, splits it into fragments and prepares embeddings before writing to MongoDB. Fragments retain owner, source and page metadata when available. Embedding failures are reported; writing documents does not guarantee that Atlas indexes are immediately ready.
+
+## 6. Local setup
+
+Prerequisites: Python 3.12, Node.js/npm, Redis, a MongoDB Atlas cluster and Hugging Face access. Tavily is optional.
+
+1. Copy `backend/.env.example` to `backend/.env` and `frontend/.env.example` to `frontend/.env.local` only if those files do not already exist.
+2. Set the variables below. To run without remote observability, set `LANGFUSE_ENABLED=false`.
+3. Create Atlas Search and Vector Search indexes using the configured names. The embedding model, vector dimension and index definition must match.
+4. Install and start:
+
+```sh
 make install
+make run
 ```
 
-3. Démarrer le backend et le frontend ensemble :
+`make run` (also available as `make dev`) starts both services in the foreground.
+Press Ctrl+C, or run `make stop` from another terminal, to stop both services.
+After editing `backend/.env`, run `make stop` followed by `make run`.
+These commands manage only the services started by `make run`; stop any older,
+individually started servers in their original terminals first. Redis must be
+started separately. `make backend` and `make frontend` remain available for
+running the services individually.
 
-```bash
-make dev
+| Backend variable | Purpose |
+|---|---|
+| `LLM_PROVIDER=huggingface` | Selected generation provider |
+| `HUGGINGFACE_API_KEY` | Hugging Face account key |
+| `HUGGINGFACE_MODEL` | Generation model available to the account; `MODEL_*` overrides are optional |
+| `MODEL_EMBEDDING`, `EMBEDDING_DIMENSIONS` | Embedding model and vector dimension |
+| `MONGODB_URI` | MongoDB Atlas connection |
+| `REDIS_URL` | Redis connection |
+| `AUTH_SECRET_KEY` | Environment-specific authentication secret |
+| `TAVILY_API_KEY` | Enables web search in automatic mode |
+| `DOCUMENTARY_AGENT_TIMEOUT_SECONDS` | Global team timeout, 90 seconds by default |
+
+The frontend uses `NEXT_PUBLIC_BACKEND_URL`. Defaults: frontend at `http://localhost:3000`, backend at `http://localhost:8000`. Provider keys remain on the backend. Restart it after changing its `.env`.
+
+Sign in, upload a text-based PDF or compatible CSV, then ask about the document. To test the web, select automatic mode and explicitly request an internet search.
+
+For Render, [render.yaml](render.yaml) describes the backend. Enter secrets in Render's environment settings, including Hugging Face and Tavily keys: the local `.env` is not transferred automatically.
+
+## 7. Testing and evaluation
+
+Local tests use provider doubles to verify collaboration, permissions, citations, budgets, failures, parallel search and request isolation.
+
+```sh
+APP_ENV=test LANGFUSE_ENABLED=false LANGFUSE_TRACING_ENABLED=false LOG_TO_FILE=false \
+HUGGINGFACE_API_KEY='' TAVILY_API_KEY='' MONGODB_URI='' make test
 ```
 
-Ça lance le backend (`:8000`) et le frontend (`:3000`) en parallèle dans le même terminal, avec un seul `Ctrl+C` pour tout arrêter. Chaque service reste aussi disponible séparément via `make backend` ou `make frontend`.
+For diagnostics and evaluation against real services:
 
-4. Ouvrir :
-
-```text
-http://localhost:3000
+```sh
+cd backend
+.venv/bin/python -m app.evaluation.index_health
+.venv/bin/python -m app.evaluation.retrieval_benchmark --verbose
+.venv/bin/python -m app.evaluation.compare_workflows
 ```
 
-## Documentation
+Index diagnostics are read-only. The retrieval benchmark requires the ingested reference corpus and ready indexes; in owner mode, supply `--owner-id <corpus-owner>`. The workflow comparator retains answers, latency and counters to compare the simple baseline with the collaborative team. Real evaluations call configured providers.
 
-Pour aller plus loin :
+**Passing tests does not prove factual accuracy.** Citation checks and LLM review do not replace independently annotated business questions. Measure real parallel-search latency and the benefit of collaboration on the target corpus.
 
-- [Fonctionnement, pas à pas](docs/FONCTIONNEMENT.md) — comment marche le projet, du démarrage à la réponse, étape par étape.
-- [Guide du projet](docs/GUIDE_PROJET.md) — architecture, stack, workflow, sécurité, limites connues, roadmap.
-- [Agents](docs/AGENTS.md) — rôle et fonctionnement détaillé de chaque agent.
-- [RAG — détail du pipeline et limites connues](docs/RAG_SYSTEM.md)
-- [Évaluation](docs/EVALUATION.md)
+## 8. Limitations and documentation
 
-## Positionnement
+This remains a learning prototype: no OCR for scanned PDFs, character-based chunking, incomplete file-version replacement and limited context capacity. Quality also depends on the configured models and their ability to follow JSON contracts.
 
-Ce projet est un **starter production-grade avancé** : il reste lisible et pédagogique, mais il introduit déjà les patterns importants des systèmes agentiques modernes.
+Project-authored interface text, diagnostics, documentation and default response instructions are in English. Imported content and multilingual regression fixtures retain their original language. Existing tool identifiers and documentation paths remain stable for compatibility.
 
-Cette branche améliore plusieurs points critiques : ingestion idempotente avec IDs stables, fusion hybride RRF, réutilisation des embeddings au reranking, compression locale plus sélective, critic conditionnel mais imposé sur le RAG, contrôle d'accès documentaire configurable, limites d'ingestion, reset/batch administrables et rate limiting Redis avec fallback local. Il n’est pas encore une plateforme d’entreprise complète : le reranker cross-encoder, le checkpoint persistant, les rôles fins et l’évaluation continue restent des pistes d’évolution.
+- [Collaborative architecture and agent contracts](docs/ARCHITECTURE_AGENT.md)
+- [Agents and code components](docs/AGENTS.md)
+- [Step-by-step operation](docs/FONCTIONNEMENT.md)
+- [RAG, parallel search, ingestion and indexes](docs/RAG_SYSTEM.md)
+- [Evaluation and metric limitations](docs/EVALUATION.md)
+- [Simple reference workflow](docs/ARCHITECTURE_SIMPLIFIEE.md)
+- [Initial project audit](docs/AUDIT_2026-09-10.md)
+
+Project created by Manda Surel.

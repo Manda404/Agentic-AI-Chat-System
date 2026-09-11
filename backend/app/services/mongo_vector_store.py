@@ -1,15 +1,4 @@
-"""
-Store vectoriel basé sur MongoDB Atlas Vector Search.
-
-Implémente `VectorStorePort` (voir `retrieval_ports.py`) en réutilisant la
-collection pymongo déjà connectée par `SearchService` (même cluster, mêmes
-documents, un seul point de connexion) et un `EmbeddingService` pour
-vectoriser la requête utilisateur.
-
-`pymongo` est synchrone : `aggregate()` bloque le thread appelant. L'appel
-est délégué à `asyncio.to_thread` pour ne pas geler l'event loop pendant la
-requête `$vectorSearch`.
-"""
+"""Atlas Vector Search implementation of VectorStorePort. Reuse SearchService's MongoDB collection and an embedding service for the query. Run synchronous PyMongo aggregation through asyncio.to_thread so network I/O does not block the event loop."""
 
 import asyncio
 
@@ -21,10 +10,10 @@ from app.services.search_service import SearchService
 
 
 class MongoVectorStore:
-    """Recherche par similarité vectorielle via l'index Atlas Vector Search."""
+    """Retrieve documents by similarity through Atlas Vector Search."""
 
     def __init__(self, search_service: SearchService, embedding_service: EmbeddingService):
-        """Réutilise la collection déjà connectée par `SearchService` et un service d'embeddings."""
+        """Reuse SearchService's connected collection and the embedding service."""
         self.search_service = search_service
         self.embedding_service = embedding_service
 
@@ -34,16 +23,16 @@ class MongoVectorStore:
         limit: int = 5,
         owner_id: str | None = None,
     ) -> list[SearchResult]:
-        """Vectorise la requête puis interroge l'index Atlas Vector Search."""
+        """Embed the query and search the configured Atlas vector index."""
         collection = self.search_service.collection
         if collection is None:
-            return []
+            raise RuntimeError("MongoDB Atlas is not available for vector search.")
 
         try:
             query_embedding = await self.embedding_service.embed_query(query)
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("Query embedding failed; skipping vector search.")
-            return []
+            raise RuntimeError("Query embedding failed.") from exc
 
         try:
             vector_limit = max(limit * 5, 20)
@@ -61,7 +50,7 @@ class MongoVectorStore:
             ]
             access_filter = self.search_service._search_access_filter(owner_id)
             if access_filter:
-                pipeline.append({"$match": access_filter})
+                pipeline[0]["$vectorSearch"]["filter"] = access_filter
             pipeline.append({"$limit": limit})
             hits = await asyncio.to_thread(lambda: list(collection.aggregate(pipeline)))
             return [
@@ -79,4 +68,4 @@ class MongoVectorStore:
             ]
         except Exception as exc:
             logger.bind(reason=str(exc)).warning("Vector search query failed.")
-            return []
+            raise RuntimeError("Vector search query failed; check index readiness and filter fields.") from exc

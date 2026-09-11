@@ -1,12 +1,4 @@
-"""
-Middleware qui ajoute des en-têtes de sécurité HTTP à chaque réponse.
-
-Ne fait aucune logique métier : il se contente d'ajouter des headers
-standards (CSP, X-Frame-Options, etc.) pour réduire la surface
-d'attaque côté navigateur (clickjacking, XSS, sniffing MIME...).
-Ce middleware ne logue rien intentionnellement : il s'exécute sur
-CHAQUE requête et n'apporte aucune information utile au diagnostic.
-"""
+"""Attach browser security headers, including CSP, X-Frame-Options and MIME protections, to responses. This middleware has no business logic and intentionally emits no per-request diagnostic logs."""
 
 from typing import Callable
 
@@ -21,7 +13,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Laisse la requête suivre son cours puis ajoute les en-têtes de sécurité à la réponse."""
+        """Process the request and add security headers to the response."""
         response = await call_next(request)
         
         response.headers["X-Frame-Options"] = "DENY"

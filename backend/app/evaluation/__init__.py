@@ -1,1 +1,1 @@
-"""Mini framework d'évaluation pour les workflows agentiques."""
+"""Evaluation utilities for agentic workflows."""

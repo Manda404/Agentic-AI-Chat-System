@@ -1,11 +1,6 @@
-"""
-Agent de retrieval hybride.
-
-Ce module prépare une architecture RAG plus avancée que la recherche full-text
-pure. Aujourd'hui, il fusionne les résultats MongoDB Atlas Search déjà présents dans
-`state.search_results` avec un éventuel `VectorStorePort`. Par défaut, le store
-vectoriel est `NullVectorStore`, donc aucune dépendance lourde n'est imposée.
-"""
+"""Hybrid retrieval: parallel text/vector branches followed by RRF fusion."""
+import asyncio
+import time
 
 from app.logger import logger
 from app.models.chat_models import AgentResult, SearchResult
@@ -16,34 +11,78 @@ RRF_K = 60.0
 
 
 class HybridRetrieverAgent:
-    """
-    Fusionne les documents candidats provenant de plusieurs sources.
-
-    Le but est d'avoir une étape dédiée où brancher plus tard embeddings,
-    recherche vectorielle, hybrid search ou fusion de scores sans modifier
-    `SearchAgent` ni `RAGAgent`.
-    """
+    """Merge candidates from multiple retrieval sources. The chat uses run_parallel; run preserves the sequential interface for experiments with existing text candidates."""
 
     def __init__(self, vector_store: VectorStorePort | None = None, limit: int = 8):
-        """Configure le store vectoriel optionnel et le nombre maximum de résultats conservés."""
+        """Configure the optional vector store and maximum retained results."""
         self.vector_store = vector_store or NullVectorStore()
         self.limit = limit
 
-    async def run(self, state: GraphState) -> AgentResult:
-        """Fusionne full-text + vectoriel, met à jour l'état et expose des métriques de retrieval."""
-        full_text_results = state.search_results or []
+    async def _vector_search(self, state):
+        state.retrieval_metrics.pop("vector_error", None)
         try:
-            # Recherche vectorielle optionnelle : peut être branchée plus tard via VectorStorePort.
-            vector_results = await self.vector_store.similarity_search(
-                state.user_message,
-                limit=self.limit,
-                owner_id=state.metadata.get("user_id"),
+            return await self.vector_store.similarity_search(
+                state.metadata.get("retrieval_query") or state.user_message,
+                limit=self.limit, owner_id=state.metadata.get("user_id"),
             )
         except Exception as exc:
-            logger.bind(reason=str(exc)).warning("Vector search failed; continuing with full-text results.")
-            vector_results = []
+            logger.bind(error_type=type(exc).__name__).warning("Vector search failed; continuing with full-text results.")
+            state.retrieval_metrics["vector_error"] = type(exc).__name__
+            return []
 
-        # Fusionne par rang, car les scores full-text et vectoriels ne partagent pas la même échelle.
+    async def run_parallel(self, state, text_search):
+        """Run branches in independent states, avoiding concurrent writes to workflow state. Return text/hybrid traces and text candidates for the benchmark. Cancelling gather cancels both asynchronous waits."""
+        def branch_state():
+            return GraphState(conversation_id=state.conversation_id, user_message=state.user_message,
+                              route=state.route, metadata={"user_id": state.metadata.get("user_id"),
+                              "retrieval_query": state.metadata.get("retrieval_query") or state.user_message})
+        text_state, vector_state = branch_state(), branch_state()
+        timings = {}
+
+        async def text_branch():
+            started = time.perf_counter()
+            try:
+                return await text_search.run(text_state)
+            except Exception as exc:
+                text_state.search_results = []
+                text_state.retrieval_metrics['search_error'] = type(exc).__name__
+                return AgentResult(agent='search', output='search unavailable.', metadata={'error': type(exc).__name__})
+            finally:
+                timings['search'] = round((time.perf_counter() - started) * 1000, 2)
+
+        async def vector_branch():
+            started = time.perf_counter()
+            try:
+                return await self._vector_search(vector_state)
+            finally:
+                timings['vector_search'] = round((time.perf_counter() - started) * 1000, 2)
+
+        started = time.perf_counter()
+        text_result, vector_results = await asyncio.gather(text_branch(), vector_branch())
+        timings['parallel_search'] = round((time.perf_counter() - started) * 1000, 2)
+        for key in ('search_error', 'vector_error'):
+            state.retrieval_metrics.pop(key, None)
+        state.retrieval_metrics.update(text_state.retrieval_metrics)
+        state.retrieval_metrics.update(vector_state.retrieval_metrics)
+        state.search_output = text_state.search_output
+        state.search_results = text_state.search_results
+        started = time.perf_counter()
+        hybrid_result = self.fuse(state, vector_results)
+        timings['hybrid_fusion'] = round((time.perf_counter() - started) * 1000, 2)
+        state.evaluation.setdefault('component_latency_ms', {}).update(timings)
+        state.retrieval_metrics.update({'retrieval_execution': 'parallel', 'retrieval_latency_ms': timings,
+            'retrieval_status': 'unavailable' if all(key in state.retrieval_metrics for key in ('search_error', 'vector_error'))
+            else 'degraded' if any(key in state.retrieval_metrics for key in ('search_error', 'vector_error')) else 'ok'})
+        hybrid_result = hybrid_result.model_copy(update={'metadata': dict(state.retrieval_metrics)})
+        return text_result, hybrid_result, text_state.search_results
+
+    async def run(self, state: GraphState) -> AgentResult:
+        """Experimental compatibility: merge vector hits with previously retrieved text candidates."""
+        return self.fuse(state, await self._vector_search(state))
+
+    def fuse(self, state, vector_results):
+        full_text_results = state.search_results or []
+        # Fuse rankings because text and vector scores use different scales.
         merged = self._merge(full_text_results, vector_results)
         state.search_results = merged[: self.limit]
         state.retrieval_metrics.update(
@@ -66,11 +105,15 @@ class HybridRetrieverAgent:
         return AgentResult(agent="hybrid_retriever", output=output, metadata=state.retrieval_metrics)
 
     def _merge(self, full_text: list[SearchResult], vector: list[SearchResult]) -> list[SearchResult]:
-        """Fusionne full-text et vectoriel avec Reciprocal Rank Fusion."""
+        """Combine text and vector rankings using Reciprocal Rank Fusion."""
         fused: dict[tuple[str, str, int | None], tuple[SearchResult, float]] = {}
         for results in (full_text, vector):
+            seen = set()
             for rank, item in enumerate(results, start=1):
                 key = self._key(item)
+                if key in seen:
+                    continue
+                seen.add(key)
                 current_item, current_score = fused.get(key, (item, 0.0))
                 if item.snippet and len(item.snippet) > len(current_item.snippet):
                     current_item = item
@@ -83,7 +126,7 @@ class HybridRetrieverAgent:
         ]
 
     def _key(self, item: SearchResult) -> tuple[str, str, int | None]:
-        """Construit une clé stable de document pour déduplication inter-branches."""
+        """Build a stable document identity for cross-branch deduplication."""
         if item.document_id:
             return (item.document_id, "", None)
         return (item.title, item.file_name or item.source, item.page_number)

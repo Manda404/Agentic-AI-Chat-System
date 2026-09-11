@@ -1,10 +1,4 @@
-"""
-Routes d'authentification : inscription, connexion et validation de session.
-
-L'inscription et la connexion sont les SEULS endpoints publics du backend
-(pas de JWT requis). La route `/me` est protégée et sert au frontend à
-valider une session sauvegardée avant d'ouvrir le workspace.
-"""
+"""Registration, login and session-validation routes. Registration and login do not require a JWT. The protected /me route validates a saved session before the frontend opens the workspace."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -26,7 +20,7 @@ token_service = TokenService()
 async def get_authenticated_user(
     current_user: UserResponse = Depends(get_current_user),
 ) -> UserResponse:
-    """Valide le JWT fourni et retourne l'utilisateur de la session courante."""
+    """Validate the supplied JWT and return the current session user."""
     return current_user
 
 
@@ -35,7 +29,7 @@ async def register(
     request: RegisterRequest,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> UserResponse:
-    """Crée un nouveau compte utilisateur (email + mot de passe hashé) dans Redis."""
+    """Create a Redis user account with an email and hashed password."""
     logger.bind(user_id=request.email).info("Register request received.")
     try:
         user = await auth_service.register_user(request)
@@ -51,7 +45,7 @@ async def login(
     request: LoginRequest,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> TokenResponse:
-    """Vérifie les identifiants et retourne un token JWT valable `AUTH_TOKEN_EXPIRY_MINUTES` minutes."""
+    """Validate credentials and return a JWT valid for AUTH_TOKEN_EXPIRY_MINUTES."""
     logger.bind(user_id=request.email).info("Login request received.")
     user = await auth_service.authenticate_user(request)
     if not user:

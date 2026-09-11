@@ -43,7 +43,7 @@ type AgentResult = {
 };
 
 type ToolResult = {
-  tool: "calculator" | "document_list" | "citation_validator";
+  tool: "calculator" | "document_list" | "citation_validator" | "rechercher" | "rechercher_web" | "lire_passage";
   output: string;
   success: boolean;
   metadata: Record<string, unknown>;
@@ -116,27 +116,26 @@ const EMAIL_STORAGE_KEY = "agentic-rag-platform-email";
 const THEME_STORAGE_KEY = "agentic-rag-platform-theme";
 
 const quickPrompts = [
-  "Introduce this RAG project",
-  "List the indexed documents",
-  "Summarize my documents with sources",
-  "What are the key points in my documents?",
-  "Answer using only available sources",
+  "Which documents are indexed?",
+  "Can you summarize my documents with sources?",
+  "What is the latest AI news on the web?",
 ];
 
 const WELCOME_MESSAGE = `Hello, I am the Agentic RAG Platform assistant.
 
 Project goal:
 - turn internal documents into reliable, source-backed answers;
-- combine document search, hybrid retrieval, and review agents;
-- make the reasoning path observable through sources, agent traces, and retrieval metrics.
+- combine document search, hybrid retrieval, and local citation checks;
+- expose the processing steps through sources, traces, and retrieval metrics.
 
-Built by Manda Surel to demonstrate a cloud-deployable multi-agent RAG architecture.`;
+Built by Manda Surel to demonstrate a document assistant with a bounded RAG workflow.`;
 
 const MAX_ACTIVITY_LOGS = 100;
 
 export default function Home() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [input, setInput] = useState("");
+  const [answerMode, setAnswerMode] = useState<"auto" | "documents" | "general">("auto");
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
@@ -144,6 +143,12 @@ export default function Home() {
     },
   ]);
   const [lastResponse, setLastResponse] = useState<ChatResponse | null>(null);
+  const agentBudget = lastResponse?.evaluation?.documentary_agent as {
+    llm_calls?: number; tool_calls?: number; searches?: number; elapsed_ms?: number;
+  } | undefined;
+  const teamBudget = lastResponse?.evaluation?.documentary_team as { llm_calls?: number; llm_call_budget?: number; corrections?: number; searches?: number; tool_calls?: number } | undefined;
+  const collaboration = (lastResponse?.evaluation?.collaboration ?? []) as Array<{ from: string; to: string; message: string; questions?: string[]; sources?: Array<{ id: string; title: string; source: string }>; correction?: number }>;
+  const answerStatus = (lastResponse?.evaluation?.answer as { status?: string } | undefined)?.status ?? "--";
   const [loading, setLoading] = useState(false);
 
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -262,10 +267,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    // Le script inline de layout.tsx a déjà posé data-theme sur <html> avant
-    // l'hydratation (anti-flash) ; on synchronise juste le state React dessus,
-    // puis on active les transitions douces (pas de transition sur le tout
-    // premier rendu, pour éviter un fondu visible au chargement de la page).
+    // layout.tsx sets data-theme before hydration to prevent a theme flash.
+    // Synchronize React state, then enable transitions after the first render.
     const initialTheme = (document.documentElement.getAttribute("data-theme") as ThemeMode | null) ?? "dark";
     setTheme(initialTheme);
     const raf = window.requestAnimationFrame(() => {
@@ -542,15 +545,15 @@ export default function Home() {
     }
   }
 
-  async function ingestSampleData() {
+  async function ingestDirectory() {
     if (!token || ingestLoading) {
       appendLog("WARN", "Ingest request skipped because session is offline or a job is already running.");
       return;
     }
 
     setIngestLoading(true);
-    setAuthMessage("Indexing sample documents...");
-    appendLog("INFO", "Sample ingest triggered.");
+    setAuthMessage("Indexing documents from the server folder...");
+    appendLog("INFO", "Folder ingest triggered.");
 
     try {
       const response = await fetch(`${BACKEND_URL}/api/v1/ingest/batch`, {
@@ -577,13 +580,16 @@ export default function Home() {
           documents_processed: number;
           documents_indexed: number;
           status: string;
+          warnings?: string[];
         }>;
         errors?: string[];
       };
 
+      const warnings = [...(data.errors ?? []), ...data.files_summary.flatMap((file) => file.warnings ?? [])];
       setAuthMessage(
-        `Indexed ${data.total_documents_indexed} docs from ${data.total_files_processed} files into ${data.index_name}.`
+        `Indexed ${data.total_documents_indexed} docs from ${data.total_files_processed} files. ${warnings.join(" ")}`.trim()
       );
+      warnings.forEach((warning) => appendLog("WARN", warning));
       appendLog(
         "INFO",
         `Batch ingest completed: ${data.total_documents_indexed} documents indexed from ${data.total_files_processed} files.`
@@ -687,15 +693,18 @@ export default function Home() {
         file_type: string;
         documents_processed: number;
         stored_path: string;
+        embedded_count?: number;
+        warnings?: string[];
       };
 
       setAuthMessage(
-        `${data.file_name}: saved in ${data.stored_path} and indexed into ${data.index_name}.`
+        `${data.file_name}: ${data.indexed_count} passages indexed. ${(data.warnings ?? []).join(" ")}`.trim()
       );
       appendLog(
         "INFO",
         `Upload completed: ${data.file_name} (${data.documents_processed} processed, ${data.indexed_count} indexed).`
       );
+      (data.warnings ?? []).forEach((warning) => appendLog("WARN", warning));
       setSelectedDocument(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -803,6 +812,7 @@ export default function Home() {
         },
         body: JSON.stringify({
           message: nextMessage,
+          mode: answerMode,
           conversation_id: conversationId,
           history: historyPayload,
         }),
@@ -1026,7 +1036,7 @@ export default function Home() {
             <div style={authTopBarStyle}>
               <div style={styles.monoBrand}>
                 <Bot size={16} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />
-                multi-agent
+                document RAG
               </div>
               <div style={cornerMetaStyle}>
                 <span>{clock || "--:--:--"}</span>
@@ -1064,7 +1074,7 @@ export default function Home() {
                     <strong style={styles.projectBriefAuthor}>Manda Surel</strong>
                   </div>
                   <p style={styles.projectBriefText}>
-                    A multi-agent RAG platform for querying internal documents,
+                    A document assistant for querying internal documents,
                     retrieving relevant passages, and generating reviewed answers
                     with citations, traces, and retrieval context.
                   </p>
@@ -1229,7 +1239,7 @@ export default function Home() {
                 </div>
                 <div>
                   <Database size={10} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
-                  {lastResponse ? String(lastResponse.cached) : "--"}
+                  {answerStatus}
                 </div>
               </div>
             </div>
@@ -1323,7 +1333,7 @@ export default function Home() {
 
                 <button
                   type="button"
-                  onClick={ingestSampleData}
+                  onClick={ingestDirectory}
                   style={styles.secondaryButtonSquare}
                   disabled={ingestLoading}
                 >
@@ -1493,6 +1503,15 @@ export default function Home() {
               </div>
 
               <div style={composerStyle}>
+                <label style={composerHintStyle}>
+                  Answer using{" "}
+                  <select aria-label="Answer source" value={answerMode} disabled={loading}
+                    onChange={(event) => setAnswerMode(event.target.value as "auto" | "documents" | "general")}>
+                    <option value="auto">Automatic — documents and web</option>
+                    <option value="documents">Documents only</option>
+                    <option value="general">General knowledge (no document sources)</option>
+                  </select>
+                </label>
                 <textarea
                   value={input}
                   onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
@@ -1599,7 +1618,7 @@ export default function Home() {
                   />
                   <TerminalLine
                     label={<Database size={11} />}
-                    value={lastResponse ? String(lastResponse.cached) : "--"}
+                    value={answerStatus}
                     style={terminalLineStyle}
                   />
                   <TerminalLine
@@ -1611,7 +1630,7 @@ export default function Home() {
                     label={<AlertTriangle size={11} />}
                     value={
                       lastResponse
-                        ? `${String(Boolean(lastResponse.critic_passed))} ${lastResponse.critic_score ?? "--"} ${lastResponse.critic_feedback ?? ""}`.trim()
+                        ? `Local checks: ${lastResponse.critic_passed ? "passed" : "failed"}. ${lastResponse.critic_feedback ?? ""}`.trim()
                         : "--"
                     }
                     style={terminalLineStyle}
@@ -1645,6 +1664,11 @@ export default function Home() {
                     }
                     style={terminalLineStyle}
                   />
+                  {agentBudget ? <TerminalLine
+                    label={<Clock size={11} />}
+                    value={`Research: ${agentBudget.searches ?? 0}/2 searches, ${agentBudget.tool_calls ?? 0}/3 tools, ${agentBudget.llm_calls ?? 0}/4 LLM calls, ${agentBudget.elapsed_ms ?? 0} ms${teamBudget ? ` | Team: ${teamBudget.llm_calls ?? 0}/${teamBudget.llm_call_budget ?? 13} LLM calls` : ""}`}
+                    style={terminalLineStyle}
+                  /> : null}
                   <TerminalLine
                     label={<Link2 size={11} />}
                     value={lastResponse?.trace_id ?? conversationId ?? "new"}
@@ -1652,14 +1676,34 @@ export default function Home() {
                   />
                 </div>
 
+                {collaboration.length > 0 ? (
+                  <section style={styles.terminalBlock} aria-label="Agent collaboration">
+                    <div style={styles.terminalBlockTitle}>Agent collaboration — latest exchange</div>
+                    <p style={styles.smallMono}>Plan → research → synthesize → verify. At most one correction.</p>
+                    <p style={styles.smallMono}>{teamBudget?.llm_calls ?? 0}/13 LLM calls · {teamBudget?.searches ?? 0}/4 searches · {teamBudget?.corrections ?? 0}/1 correction</p>
+                    <ol style={{ paddingLeft: 20 }}>
+                      {collaboration.map((event, index) => (
+                        <li key={index} style={styles.agentOutputCard}>
+                          <strong>{event.from} → {event.to}{event.correction ? " · Correction requested" : ""}</strong>
+                          <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{event.message}</p>
+                          {event.questions?.length ? <ul>{event.questions.map((question, i) => <li key={i}>{question}</li>)}</ul> : null}
+                          {event.sources?.length ? <details><summary>{event.sources.length} shared source(s)</summary>
+                            <ul>{event.sources.map((source, i) => <li key={i} style={{ overflowWrap: "anywhere" }}>{source.title} — {source.source}</li>)}</ul>
+                          </details> : null}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ) : null}
+
                 <div style={styles.terminalBlock}>
                   <div style={styles.terminalBlockTitle}>
                     <Wrench size={10} style={{ display: "inline-block", verticalAlign: "middle", marginRight: 4 }} />
                     output
                   </div>
                   {lastResponse?.agent_results?.length ? (
-                    lastResponse.agent_results.map((result) => (
-                      <div key={result.agent} style={styles.agentOutputCard}>
+                    lastResponse.agent_results.map((result, index) => (
+                      <div key={`${result.agent}-${index}`} style={styles.agentOutputCard}>
                         <div style={styles.agentOutputHeader}>
                           <span>{result.agent}</span>
                           <span style={styles.smallMono}>●</span>

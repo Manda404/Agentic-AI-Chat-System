@@ -1,4 +1,4 @@
-"""Outils déterministes autorisés et exécutés par le workflow."""
+"""Authorized tools executed by the workflow."""
 
 from app.tools.calculator_tool import CalculatorTool
 from app.tools.citation_validator_tool import CitationValidatorTool

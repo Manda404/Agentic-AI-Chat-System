@@ -1,13 +1,8 @@
 /*
- * Palette de thème (nuit = défaut, jour = [data-theme="light"]).
- *
- * L'app utilise des styles React inline (`CSSProperties`) qui référencent
- * ces variables via `var(--token)` plutôt que des couleurs codées en dur,
- * pour que la bascule jour/nuit change tout instantanément sans re-render.
- *
- * Le mode nuit utilise une base bleu-noir neutre. Le vert reste réservé
- * aux actions, aux statuts et aux éléments actifs afin de conserver
- * l'identité terminal sans fatiguer la lecture.
+ * Theme tokens: dark by default, light via [data-theme="light"].
+ * Inline React styles reference var(--token), allowing theme changes
+ * without rerendering every component. Dark mode uses neutral blue-black;
+ * green highlights actions, statuses and active elements for readability.
  */
 
 :root {
@@ -159,7 +154,7 @@ body {
   background: var(--bg-page);
 }
 
-/* Transition douce lors du basculement jour/nuit, sans l'appliquer au premier rendu. */
+/* Smooth theme transitions, enabled only after the first render. */
 body.theme-ready,
 body.theme-ready * {
   transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;

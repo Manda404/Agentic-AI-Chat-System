@@ -1,30 +1,12 @@
-"""
-Routes d'ingestion de documents dans MongoDB Atlas.
-
-Trois façons d'indexer des documents :
-- `POST /ingest/sample-data` : indexe le CSV d'exemple fourni avec le projet.
-- `POST /ingest/upload` : upload d'un fichier unique (PDF ou CSV) depuis le frontend.
-- `POST /ingest/batch` : parcourt un dossier serveur et indexe tous les PDF/CSV trouvés.
-
-Chaque document reçoit aussi un embedding (calculé via `HuggingFaceEmbeddingService`,
-le même service que celui utilisé pour le reranking sémantique) avant d'être inséré,
-afin d'alimenter à la fois l'index Atlas Search (full-text) et l'index Atlas Vector
-Search (sémantique) sur la même collection.
-
-L'ingestion ajoute aussi `owner_id`/`visibility`, des IDs stables et des limites
-de taille pour réduire les doublons et les risques d'abus.
-
-Toutes ces routes nécessitent un utilisateur authentifié.
-"""
+"""Authenticated MongoDB ingestion routes: sample-data indexes the bundled CSV, upload accepts one PDF/CSV, and batch scans a server directory. Shared preprocessing adds access metadata, stable IDs, size limits and embeddings for text/vector search. Embedding failures leave an explicitly reported text-only ingestion mode."""
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 import asyncio
-import hashlib
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 from uuid import uuid4
 from app.config.settings import settings
+from app.data_ingest.document_processing import stable_document_id, with_document_id, text_chunks
 from app.data_ingest.file_ingest import (
     detect_file_type,
     load_documents_from_directory,
@@ -53,12 +35,12 @@ UPLOAD_DIRECTORY = BACKEND_ROOT / "data"
 
 
 def _is_admin(user: UserResponse) -> bool:
-    """Vérifie si l'utilisateur courant est autorisé pour les opérations globales."""
+    """Check whether the current user may perform global operations."""
     return user.email.lower() in settings.admin_emails
 
 
 def _require_admin_if_enabled(user: UserResponse, enabled: bool, operation: str) -> None:
-    """Bloque les opérations dangereuses en production sans casser le mode local."""
+    """Enforce configured administrator access while preserving local development behavior."""
     if enabled and not _is_admin(user):
         raise HTTPException(
             status_code=403,
@@ -67,7 +49,7 @@ def _require_admin_if_enabled(user: UserResponse, enabled: bool, operation: str)
 
 
 def _batch_root() -> Path:
-    """Racine serveur autorisée pour l'ingestion batch."""
+    """Return the server root allowed for batch ingestion."""
     root = Path(settings.batch_ingest_root)
     if not root.is_absolute():
         root = BACKEND_ROOT / root
@@ -75,7 +57,7 @@ def _batch_root() -> Path:
 
 
 def _resolve_batch_directory(directory_path: str) -> Path:
-    """Normalise le dossier batch et interdit de sortir de la racine configurée."""
+    """Normalize the batch directory and prevent traversal outside the configured root."""
     requested = Path(directory_path or settings.batch_ingest_root)
     if not requested.is_absolute():
         requested = BACKEND_ROOT / requested
@@ -90,16 +72,14 @@ def _resolve_batch_directory(directory_path: str) -> Path:
 
 
 def _available_upload_path(filename: str) -> Path:
-    """Construit un chemin sûr sans écraser un document déjà enregistré."""
+    """Build a safe upload path without overwriting an existing file."""
     safe_name = Path(filename).name
-    destination = UPLOAD_DIRECTORY / safe_name
-    if destination.exists():
-        destination = UPLOAD_DIRECTORY / f"{destination.stem}-{uuid4().hex[:8]}{destination.suffix}"
-    return destination
+    return UPLOAD_DIRECTORY / f"{uuid4().hex}-{safe_name}"
+
 
 
 def _persist_upload(source, destination: Path, max_bytes: int) -> None:
-    """Copie le fichier temporaire de Starlette vers le stockage local permanent."""
+    """Copy the Starlette temporary upload into persistent local storage."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     source.seek(0)
     bytes_written = 0
@@ -118,7 +98,7 @@ def _persist_upload(source, destination: Path, max_bytes: int) -> None:
 
 
 def _discard_failed_upload(destination: Path) -> None:
-    """Supprime un fichier uploadé qui n'a pas pu être indexé."""
+    """Remove an uploaded file that could not be indexed."""
     try:
         if destination.exists():
             destination.unlink()
@@ -129,58 +109,44 @@ def _discard_failed_upload(destination: Path) -> None:
 
 
 def _clean_text(value: Any, limit: int | None = None) -> str:
-    """Nettoie un champ texte avant stockage/indexation."""
+    """Normalize a text field before storage and indexing."""
     text = str(value or "").replace("\x00", "").strip()
     if limit is not None and len(text) > limit:
         return text[:limit]
     return text
 
 
-def _stable_document_id(document: Dict[str, Any]) -> str:
-    """Construit un identifiant stable pour éviter les doublons à la réingestion."""
-    identity_owner = (
-        _clean_text(document.get("owner_id")).lower()
-        if document.get("visibility") == "private"
-        else ""
-    )
-    identity = "|".join(
-        [identity_owner]
-        + [
-            str(document.get(key, "") or "").strip()
-            for key in ("source", "file_name", "page_number", "title", "snippet")
-        ]
-    )
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+# Compatibility alias: keep one shared identity rule.
+_stable_document_id = stable_document_id
 
 
 def _attach_document_ids(documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ajoute `document_id` et `_id` MongoDB déterministes à chaque document."""
-    for document in documents:
-        document_id = str(document.get("document_id") or _stable_document_id(document))
-        document["document_id"] = document_id
-        document["_id"] = document_id
-    return documents
+    return [with_document_id(document) for document in documents]
 
 
 def _normalize_documents(documents: List[Dict[str, Any]], owner_id: str) -> List[Dict[str, Any]]:
-    """Ajoute les métadonnées d'accès et borne les champs indexés."""
+    """Add access metadata and bound indexed fields."""
     normalized: list[dict[str, Any]] = []
     for document in documents:
         item = dict(document)
         item["title"] = _clean_text(item.get("title") or item.get("file_name") or "Untitled", 300)
-        item["snippet"] = _clean_text(item.get("snippet"), settings.max_ingested_snippet_chars)
+        item["snippet"] = _clean_text(item.get("snippet"))
         item["category"] = _clean_text(item.get("category") or "document", 120)
         item["source"] = _clean_text(item.get("source") or "ingest", 300)
         item["file_name"] = _clean_text(item.get("file_name"), 300) or None
         item["owner_id"] = owner_id
         item["visibility"] = settings.document_default_visibility
-        if item["snippet"]:
-            normalized.append(item)
+        for index, chunk in enumerate(text_chunks(item["snippet"], settings.max_ingested_snippet_chars)):
+            fragment = {**item, "snippet": chunk, "chunk_index": index}
+            # Parser-supplied identities must not overwrite chunk identities.
+            fragment.pop("_id", None)
+            fragment.pop("document_id", None)
+            normalized.append(fragment)
     return normalized
 
 
 def _enforce_document_limit(documents: List[Dict[str, Any]], source_label: str) -> None:
-    """Refuse une ingestion qui produirait trop de fragments en une requête."""
+    """Reject ingestion that would exceed the per-request fragment limit."""
     if len(documents) > settings.max_ingest_documents:
         raise HTTPException(
             status_code=413,
@@ -197,35 +163,26 @@ async def _prepare_documents(
     owner_id: str,
     source_label: str,
 ) -> List[Dict[str, Any]]:
-    """Normalise, limite, vectorise, puis ajoute les identifiants stables."""
+    """Normalize, enforce limits, embed and assign stable document identities."""
     normalized = _normalize_documents(documents, owner_id=owner_id)
     _enforce_document_limit(normalized, source_label)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="No extractable text found. Scanned PDFs require OCR.")
     return _attach_document_ids(await _attach_embeddings(normalized, embedding_service))
-
-
-async def _bump_document_version(memory_service: RedisMemoryService) -> None:
-    """Invalide les clés de cache dépendantes du corpus documentaire."""
-    await memory_service.increment_value("documents:version")
 
 
 async def _attach_embeddings(
     documents: List[Dict[str, Any]],
     embedding_service: HuggingFaceEmbeddingService,
 ) -> List[Dict[str, Any]]:
-    """
-    Calcule un embedding par document (title + snippet) pour la recherche vectorielle.
-
-    Non bloquant : si le fournisseur d'embeddings échoue (quota, modèle
-    indisponible, timeout), l'ingestion continue sans le champ `embedding`.
-    Ces documents restent cherchables en full-text (Atlas Search), ils
-    seront simplement absents des résultats de recherche vectorielle
-    jusqu'à ré-ingestion avec un fournisseur d'embeddings disponible.
-    """
+    """Embed each document's title and snippet. Provider errors do not cancel text ingestion: warnings report that vector search requires successful embedding. An upsert may preserve a previously stored vector when no replacement is supplied."""
     if not documents:
         return documents
     texts = [f"{document.get('title', '')}. {document.get('snippet', '')}" for document in documents]
     try:
         embeddings = await embedding_service.embed_texts(texts)
+        from app.services.embedding_service import validate_embeddings
+        validate_embeddings(embeddings, len(documents), settings.embedding_dimensions)
     except Exception as exc:
         logger.bind(reason=str(exc), document_count=len(documents)).warning(
             "Embedding computation failed; indexing documents without vectors."
@@ -233,7 +190,17 @@ async def _attach_embeddings(
         return documents
     for document, embedding in zip(documents, embeddings):
         document["embedding"] = embedding
+        document["embedding_model"] = settings.embedding_model
     return documents
+
+
+def _embedding_summary(documents: list[dict]) -> dict:
+    embedded_count = sum(bool(item.get("embedding")) for item in documents)
+    return {
+        "embedded_count": embedded_count,
+        "warnings": (["Vector indexing incomplete; documents are available for full-text indexing only until re-ingested."]
+                     if embedded_count < len(documents) else []),
+    }
 
 
 @router.delete("/data/reset", response_model=DataResetResponse)
@@ -242,14 +209,13 @@ async def reset_application_data(
     search_service: SearchService = Depends(get_search_service),
     memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> DataResetResponse:
-    """Vide la base documentaire et les données Redis temporaires, en conservant les comptes."""
+    """Clear document and temporary Redis data while retaining user accounts."""
     logger.bind(user_id=current_user.email).warning("Application data reset requested.")
     try:
         _require_admin_if_enabled(current_user, settings.reset_requires_admin, "Data reset")
         owner_id = None if _is_admin(current_user) or settings.document_scope_mode == "shared" else current_user.email
         mongodb_deleted = await search_service.clear_documents(owner_id=owner_id)
         redis_deleted = await memory_service.clear_runtime_data(owner_id=owner_id)
-        await _bump_document_version(memory_service)
         logger.bind(
             user_id=current_user.email,
             mongodb_documents_deleted=mongodb_deleted,
@@ -271,12 +237,11 @@ async def ingest_sample_data(
     current_user: UserResponse = Depends(get_current_user),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> IngestResponse:
-    """Charge et indexe le CSV d'exemple `backend/data/ai_tooling_catalog.csv`."""
+    """Load and index the bundled backend/data/ai_tooling_catalog.csv dataset."""
     logger.bind(user_id=current_user.email).info("Sample ingest requested.")
     try:
-        documents = await asyncio.to_thread(load_documents_from_csv, "data/ai_tooling_catalog.csv")
+        documents = await asyncio.to_thread(load_documents_from_csv, str(BACKEND_ROOT / "data/ai_tooling_catalog.csv"))
         logger.bind(user_id=current_user.email, document_count=len(documents)).info(
             "CSV documents loaded for ingest."
         )
@@ -287,8 +252,6 @@ async def ingest_sample_data(
             source_label="Sample data",
         )
         indexed_count = await search_service.bulk_index_documents(documents)
-        if indexed_count:
-            await _bump_document_version(memory_service)
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             "Sample ingest completed."
         )
@@ -296,6 +259,7 @@ async def ingest_sample_data(
             indexed_count=indexed_count,
             index_name=settings.mongodb_collection,
             source_file="data/ai_tooling_catalog.csv",
+            **_embedding_summary(documents),
         )
     except HTTPException:
         raise
@@ -311,9 +275,8 @@ async def ingest_uploaded_file(
     current_user: UserResponse = Depends(get_current_user),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> FileIngestResponse:
-    """Enregistre durablement un PDF/CSV directement dans `data`, puis l'indexe."""
+    """Persist a PDF/CSV under data, then index its contents."""
     logger.bind(user_id=current_user.email).info(f"File upload ingest requested: {file.filename}")
 
     if not file.filename:
@@ -333,6 +296,13 @@ async def ingest_uploaded_file(
         )
 
         documents = await asyncio.to_thread(load_documents_from_file, str(destination), file_type)
+        # Random physical file names protect storage without changing logical identity.
+        original_stem = Path(file.filename).stem
+        for document in documents:
+            document["file_name"] = Path(file.filename).name
+            if file_type == "pdf":
+                document["title"] = f"{original_stem} - Page {document['page_number']}"
+                document["source"] = f"pdf-ingest:{original_stem}"
 
         logger.bind(user_id=current_user.email, document_count=len(documents)).info(
             f"Loaded {len(documents)} documents from {file.filename}"
@@ -345,8 +315,6 @@ async def ingest_uploaded_file(
             source_label=file.filename,
         )
         indexed_count = await search_service.bulk_index_documents(documents)
-        if indexed_count:
-            await _bump_document_version(memory_service)
 
         logger.bind(user_id=current_user.email, indexed_count=indexed_count).info(
             f"File ingest completed: {file.filename}"
@@ -359,6 +327,7 @@ async def ingest_uploaded_file(
             file_type=file_type,
             documents_processed=len(documents),
             stored_path=str(destination.relative_to(BACKEND_ROOT)),
+            **_embedding_summary(documents),
         )
 
     except HTTPException:
@@ -376,9 +345,8 @@ async def ingest_batch_from_directory(
     request: IngestRequest = Body(default=IngestRequest()),
     search_service: SearchService = Depends(get_search_service),
     embedding_service: HuggingFaceEmbeddingService = Depends(get_embedding_service),
-    memory_service: RedisMemoryService = Depends(get_memory_service),
 ) -> BatchIngestResponse:
-    """Parcourt un dossier serveur, indexe chaque PDF/CSV trouvé, et retourne un résumé par fichier."""
+    """Index PDF/CSV files in a server directory and return per-file outcomes."""
     _require_admin_if_enabled(current_user, settings.batch_ingest_requires_admin, "Batch ingest")
     directory_path = _resolve_batch_directory(request.directory_path)
     logger.bind(user_id=current_user.email).info(
@@ -387,11 +355,13 @@ async def ingest_batch_from_directory(
 
     try:
         file_types_list = request.file_types if request.file_types else None
+        parse_errors: list[str] = []
         results = await asyncio.to_thread(
             load_documents_from_directory,
             str(directory_path),
             file_types_list,  # type: ignore[arg-type]
             request.recursive,
+            parse_errors,
         )
         if len(results) > settings.max_batch_files:
             raise HTTPException(
@@ -417,11 +387,11 @@ async def ingest_batch_from_directory(
                 total_documents_indexed=0,
                 index_name=settings.mongodb_collection,
                 files_summary=[],
-                errors=["No files found in the specified directory"]
+                errors=parse_errors or ["No files found in the specified directory"]
             )
 
         files_summary = []
-        errors = []
+        errors = list(parse_errors)
         total_indexed = 0
 
         for file_path, documents in results.items():
@@ -439,7 +409,8 @@ async def ingest_batch_from_directory(
                     "file_path": file_path,
                     "documents_processed": len(documents),
                     "documents_indexed": indexed_count,
-                    "status": "success"
+                    "status": "success",
+                    **_embedding_summary(documents),
                 })
 
                 logger.bind(user_id=current_user.email).info(
@@ -462,8 +433,6 @@ async def ingest_batch_from_directory(
         logger.bind(user_id=current_user.email).info(
             f"Batch ingest completed: {len(results)} files, {total_indexed} documents"
         )
-        if total_indexed:
-            await _bump_document_version(memory_service)
 
         return BatchIngestResponse(
             total_files_processed=len(results),
@@ -475,6 +444,8 @@ async def ingest_batch_from_directory(
 
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         logger.bind(user_id=current_user.email).error(
             f"Directory not found: {directory_path}"

@@ -1,11 +1,4 @@
-"""
-État partagé du workflow LangGraph.
-
-`GraphState` reste une dataclass lisible pour les agents existants, tandis
-que `GraphStateDict` sert de schéma explicite au `StateGraph`. Le workflow
-convertit entre les deux formats aux frontières des nœuds LangGraph afin de
-garder les agents faciles à tester et à lire.
-"""
+"""Shared LangGraph workflow state. Agents use the GraphState dataclass; GraphStateDict defines the graph schema. Convert between them at node boundaries for readable, testable components."""
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
@@ -14,7 +7,7 @@ from app.models.chat_models import AgentResult, ChatMessage, PlannerDecision, Se
 
 
 class GraphStateDict(TypedDict, total=False):
-    """Schéma de données utilisé par LangGraph pour chaque étape du chat."""
+    """Data schema used by LangGraph at each chat stage."""
 
     conversation_id: str
     transaction_id: Optional[str]
@@ -46,12 +39,13 @@ class GraphStateDict(TypedDict, total=False):
     evaluation: Dict[str, Any]
     error: Optional[str]
     correction_attempted: bool
+    retrieval_correction_attempted: bool
     metadata: Dict[str, Any]
 
 
 @dataclass
 class GraphState:
-    """Contexte d'exécution d'une requête de chat, du routage à la réponse finale."""
+    """Execution context of one chat request from routing to final output."""
 
     conversation_id: str
     user_message: str
@@ -83,11 +77,21 @@ class GraphState:
     evaluation: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     correction_attempted: bool = False
+    retrieval_correction_attempted: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def selected_documents(self) -> List[SearchResult]:
+        if self.reranked_results or "reranked_count" in self.retrieval_metrics or "corrective_rag" in self.retrieval_metrics:
+            documents = self.reranked_results
+        else:
+            documents = self.search_results
+        count = self.metadata.get("context_document_count")
+        return documents if count is None else documents[:count]
 
     @classmethod
     def from_mapping(cls, payload: Dict[str, Any]) -> "GraphState":
-        """Reconstruit un état dataclass depuis le dictionnaire transmis par LangGraph."""
+        """Rebuild the state dataclass from the LangGraph channel mapping."""
         values = dict(payload)
         values.setdefault("history", [])
         values.setdefault("conversation_context", [])
@@ -126,11 +130,11 @@ class GraphState:
         return cls(**values)
 
     def to_dict(self) -> GraphStateDict:
-        """Convertit l'état en dictionnaire compatible avec `StateGraph`."""
+        """Convert state into a StateGraph-compatible mapping."""
         return asdict(self)
 
     def record_result(self, result: AgentResult) -> None:
-        """Ajoute une sortie agent et maintient la liste `agents_used` sans doublons consécutifs."""
+        """Append an agent result and maintain the deduplicated agents_used list."""
         self.agent_results.append(result)
         if result.agent not in self.agents_used:
             self.agents_used.append(result.agent)

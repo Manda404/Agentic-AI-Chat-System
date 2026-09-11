@@ -1,33 +1,20 @@
-# Guide du projet — Agentic RAG Platform
+# Project guide — Agentic RAG Platform
 
-> Référence d'architecture vérifiée contre le code de la branche
-> `architecture-improvements` le **30 août 2026**.
+> Historical guide, verified against `architecture-improvements` on **August 30, 2026**. It describes the older architecture, including components and configuration later changed or removed. Use [ARCHITECTURE_AGENT.md](ARCHITECTURE_AGENT.md) for the current collaborative graph and [ARCHITECTURE_SIMPLIFIEE.md](ARCHITECTURE_SIMPLIFIEE.md) for the intermediate baseline.
 
-## 1. Objectif et périmètre
+## 1. Objective and scope
 
-Agentic RAG Platform est une application de chat qui choisit entre une réponse
-directe et une réponse fondée sur des documents. Le backend orchestre des agents
-spécialisés avec LangGraph, expose le chemin suivi dans sa réponse JSON et le
-frontend affiche ces informations dans un cockpit de debug.
+Agentic RAG Platform is a chat application that chooses between direct answers and document-grounded answers. The backend orchestrates specialized agents through LangGraph, exposes execution details in JSON and the frontend displays them in a debugging workspace.
 
-Le projet démontre notamment :
+The project demonstrated conditional orchestration rather than a fixed list of calls; hybrid Atlas Search/Vector Search retrieval; Pydantic-validated planner and critic decisions; degraded modes for Redis, MongoDB, embeddings and LLM failures; and visible routes, agents, metrics and raw outputs.
 
-- une orchestration conditionnelle réelle, pas une simple liste d'appels ;
-- un retrieval hybride MongoDB Atlas Search + Atlas Vector Search ;
-- des sorties LLM structurées et validées par Pydantic pour le planner et le
-  critic ;
-- plusieurs modes dégradés quand Redis, MongoDB, les embeddings ou le LLM sont
-  indisponibles ;
-- une interface qui rend route, agents, métriques et sorties brutes visibles.
+This was an advanced learning starter. Its safeguards and evaluations were not sufficient to establish enterprise readiness.
 
-Il s'agit d'un starter avancé et pédagogique. Les garde-fous et l'évaluation ne
-suffisent pas encore à qualifier le système de plateforme d'entreprise.
-
-## 2. Architecture générale
+## 2. Overall architecture
 
 ```mermaid
 flowchart LR
-    UI[Next.js 15 / React 19] -->|HTTP JSON + JWT| API[FastAPI]
+    UI[Next.js 15 / React 19] -->|HTTP JSON and JWT| API[FastAPI]
     API --> C[ApplicationServices]
     C --> W[ChatWorkflow / LangGraph]
     C --> R[(Redis)]
@@ -36,404 +23,283 @@ flowchart LR
     W --> R
     W --> M
     W --> HF
-    HF --> LF[Langfuse optionnel]
+    HF --> LF[Optional Langfuse]
 ```
 
-### Cycle de vie du backend
+### Backend lifecycle
 
-`backend/app/main.py` utilise le lifespan FastAPI pour créer un
-`ApplicationServices` par processus worker. Ce conteneur construit et partage :
+`backend/app/main.py` uses FastAPI lifespan to create one `ApplicationServices` per worker. The container shares `RedisMemoryService`, `SearchService` and its PyMongo client, `HuggingFaceEmbeddingService`, `LLMService` with `AsyncOpenAI`, `AuthService` and a once-compiled `ChatWorkflow`.
 
-- un `RedisMemoryService` ;
-- un `SearchService` et son client PyMongo ;
-- un `HuggingFaceEmbeddingService` ;
-- un `LLMService` avec un client `AsyncOpenAI` ;
-- un `AuthService` ;
-- un `ChatWorkflow`, dont le graphe est compilé une seule fois.
+Shutdown closes Redis, MongoDB and LLM clients. This replaced service construction at router module scope.
 
-À l'arrêt, le pool Redis, le client MongoDB et le client LLM sont fermés. Cette
-organisation remplace l'ancienne création de services au niveau des routers.
+### I/O and concurrency
 
-### I/O et concurrence
+- LLM calls use the asynchronous `AsyncOpenAI` client.
+- Runtime Redis operations use `redis.asyncio`.
+- PyMongo remains synchronous; aggregation, bulk writes, the historical insertion fallback and deletion are offloaded with `asyncio.to_thread`.
+- Upload copying is offloaded to a thread.
+- PDF/CSV parsing follows locally and synchronously, so large files can occupy an API worker.
+- Startup Redis and MongoDB probes are synchronous before requests are served.
 
-- LLM : client `AsyncOpenAI`, appels réellement asynchrones.
-- Redis : client `redis.asyncio` pour les opérations courantes.
-- MongoDB : PyMongo reste synchrone, mais `aggregate`, `bulk_write`,
-  `insert_many` fallback et `delete_many` sont exécutés via `asyncio.to_thread`.
-- Upload : la copie du fichier est déportée via `asyncio.to_thread`.
-- Parsing PDF/CSV : exécuté localement et synchroniquement après la copie ; un
-  fichier très volumineux peut donc encore occuper le worker.
-- Au démarrage, les pings Redis et MongoDB sont synchrones, avant le service des
-  requêtes.
-
-## 3. Organisation du dépôt
+## 3. Repository layout
 
 ```text
-backend/app/main.py                 création FastAPI, lifespan, middlewares
-backend/app/service_container.py    ressources partagées du processus
+backend/app/main.py                 FastAPI creation, lifespan, middleware
+backend/app/service_container.py    shared process resources
 backend/app/routers/                health, auth, chat, ingestion, reset
-backend/app/workflows/              graphe LangGraph principal
-backend/app/agents/                 agents et fallbacks spécialisés
-backend/app/state/                  GraphState dataclass + TypedDict LangGraph
+backend/app/workflows/              main LangGraph workflow
+backend/app/agents/                 specialized agents and fallbacks
+backend/app/state/                  GraphState dataclass and graph TypedDict
 backend/app/services/               LLM, embeddings, MongoDB, auth, JWT
-backend/app/memory/                 Redis + fallback mémoire locale
-backend/app/data_ingest/            lecture PDF/CSV
-backend/app/prompts/                prompts centralisés
-backend/app/evaluation/             évaluateur chat + benchmark retrieval
-backend/app/middleware/             logs HTTP, rate limit, headers de sécurité
-backend/tests/                      tests unitaires backend
-frontend/app/page.tsx               UI, appels API et cockpit
-frontend/app/globals.css            thèmes et styles globaux
-docs/                               documentation technique
+backend/app/memory/                 Redis and local-memory fallback
+backend/app/data_ingest/            PDF/CSV readers
+backend/app/prompts/                centralized prompts
+backend/app/evaluation/             chat evaluator and retrieval benchmark
+backend/app/middleware/             HTTP logs, rate limits, security headers
+backend/tests/                      backend unit tests
+frontend/app/page.tsx               UI, API calls and diagnostics
+frontend/app/globals.css            themes and global styles
+docs/                              technical documentation
 ```
 
-## 4. Stack réelle
+## 4. Stack at the historical revision
 
-| Domaine | Technologie | Usage réel |
+| Area | Technology | Use at that revision |
 |---|---|---|
-| API | FastAPI, Uvicorn, Pydantic | Routes HTTP et validation |
-| Orchestration | LangGraph `StateGraph` | Graphe conditionnel de 19 nœuds |
-| Outils | Calculatrice, inventaire, validateur de citations | Exécution locale/contrôlée |
-| LLM | Hugging Face Router via `AsyncOpenAI` | Planning, réponse directe, RAG, critic |
-| Embeddings | Hugging Face `feature-extraction` via `httpx` | Ingestion, vector search, reranking |
-| Données documentaires | MongoDB Atlas | Collection unique, Search + Vector Search |
-| Mémoire/cache/comptes | Redis | Listes de messages et valeurs clé/valeur |
-| Auth | PyJWT, Passlib PBKDF2-SHA256 | JWT et hash des mots de passe |
-| Observabilité | Loguru, Langfuse optionnel | Logs structurés et traces LLM |
-| Frontend | Next.js 15, React 19, TypeScript | Auth, chat, ingestion, debug |
-| Fichiers | PyPDF2, `csv` standard | Une page PDF ou une ligne CSV par document |
+| API | FastAPI, Uvicorn, Pydantic | HTTP routes and validation |
+| Orchestration | LangGraph `StateGraph` | Conditional 19-node graph |
+| Tools | Calculator, inventory, citation validator | Local controlled execution |
+| LLM | Hugging Face Router through `AsyncOpenAI` | Planning, direct answers, RAG, critic |
+| Embeddings | Hugging Face feature-extraction through `httpx` | Ingestion, vector search, reranking |
+| Documents | MongoDB Atlas | Shared collection, text/vector indexes |
+| History/cache/accounts | Redis | Message lists and key/value records |
+| Authentication | PyJWT, Passlib PBKDF2-SHA256 | JWTs and password hashing |
+| Observability | Loguru, optional Langfuse | Structured logs and LLM traces |
+| Frontend | Next.js 15, React 19, TypeScript | Authentication, chat, ingestion, diagnostics |
+| Files | PyPDF2, standard `csv` | One PDF page or CSV row per record |
 
-Important : `Settings.llm_provider` accepte `ollama` ou `huggingface`, mais
-`LLMService` ne contient actuellement qu'une implémentation Hugging Face. Les
-champs `OLLAMA_BASE_URL` et `OLLAMA_MODEL` ne sont pas consommés.
+At this revision, `Settings.llm_provider` accepted `ollama` or `huggingface`, but only Hugging Face was implemented and the Ollama endpoint/model fields were unused. This is historical behavior; the current project defaults to Hugging Face and retains an optional Ollama client.
 
-## 5. API HTTP
+## 5. HTTP API
 
-Le préfixe par défaut est `/api/v1`.
+The default prefix is `/api/v1`.
 
-| Méthode et route | Auth | Fonction |
-|---|---:|---|
-| `GET /health` | non | État du backend, Redis et MongoDB + provider configuré |
-| `POST /api/v1/auth/register` | non | Crée un compte Redis, mot de passe hashé |
-| `POST /api/v1/auth/login` | non | Retourne un JWT |
-| `GET /api/v1/auth/me` | oui | Valide le JWT et l'existence du compte |
-| `POST /api/v1/chat` | oui | Exécute cache ou workflow LangGraph |
-| `GET /api/v1/conversations/{id}/context` | oui | Lit l'historique Redis |
-| `DELETE /api/v1/conversations/{id}/context` | oui | Efface cet historique |
-| `POST /api/v1/ingest/sample-data` | oui | Indexe `ai_tooling_catalog.csv` |
-| `POST /api/v1/ingest/upload` | oui | Sauvegarde et indexe un PDF/CSV |
-| `POST /api/v1/ingest/batch` | oui | Indexe les PDF/CSV d'un dossier serveur |
-| `DELETE /api/v1/data/reset` | oui | Vide documents, conversations et cache |
+| Method and route | Authentication | Historical purpose |
+|---|---|---|
+| `GET /health` | No | Backend/Redis/MongoDB status and configured provider |
+| `POST /api/v1/auth/register` | No | Create a Redis account with a hashed password |
+| `POST /api/v1/auth/login` | No | Return a JWT |
+| `GET /api/v1/auth/me` | Yes | Validate JWT and account existence |
+| `POST /api/v1/chat` | Yes | Use the historical cache or run LangGraph |
+| `GET /api/v1/conversations/{id}/context` | Yes | Read Redis history |
+| `DELETE /api/v1/conversations/{id}/context` | Yes | Clear that history |
+| `POST /api/v1/ingest/sample-data` | Yes | Index `ai_tooling_catalog.csv` |
+| `POST /api/v1/ingest/upload` | Yes | Store and index one PDF/CSV |
+| `POST /api/v1/ingest/batch` | Yes | Index PDF/CSV files from a server directory |
+| `DELETE /api/v1/data/reset` | Yes | Clear documents and runtime data |
 
-`/health` ne réalise pas d'appel test au LLM. `llm_provider` décrit la
-configuration, pas la disponibilité, le quota ou la validité de la clé.
+`/health` does not make a test LLM call. `llm_provider` describes configuration, not availability, quota or key validity.
 
-### Contrat du chat
-
-Requête :
+### Historical chat contract
 
 ```json
 {
-  "message": "Résume le document indexé",
+  "message": "Summarize the indexed document",
   "conversation_id": null,
   "history": [{"role": "assistant", "content": "..."}]
 }
 ```
 
-La réponse contient : `conversation_id`, `route`, `answer`, `agents_used`,
-`agent_results`, `tool_results`, `cached`, `context_messages`, `plan`, les champs critic et
-safety, `retrieval_metrics`, `evaluation` et `trace_id`.
+The historical response contained `conversation_id`, `route`, `answer`, `agents_used`, `agent_results`, `tool_results`, `cached`, `context_messages`, `plan`, critic/safety fields, `retrieval_metrics`, `evaluation` and `trace_id`. The current API no longer uses an answer cache.
 
-## 6. Workflow de chat
+## 6. Historical chat workflow
 
-Avant LangGraph, `ChatWorkflow.run()` :
-
-1. choisit ou crée le `conversation_id` ;
-2. lit le contexte Redis ;
-3. refuse les messages au-delà de `MAX_USER_MESSAGE_CHARS` ;
-4. consulte le cache ;
-5. sur cache miss, ajoute le message utilisateur à la mémoire ;
-6. exécute le graphe ;
-7. ajoute la réponse assistant et la met en cache.
+Before LangGraph, `ChatWorkflow.run()` selected a conversation ID, loaded Redis context, rejected oversized messages, checked the answer cache and, on a miss, appended the user message. It then ran the graph, stored the assistant response and cached it.
 
 ```mermaid
 flowchart TD
-    Start([POST /chat]) --> Size{Taille valide ?}
-    Size -->|non| TooLong[Réponse route safety]
-    Size -->|oui| Cache{Cache hit ?}
-    Cache -->|oui| Cached[Réponse route cache]
-    Cache -->|non| Memory[MemoryAgent]
+    Start([POST /chat]) --> Size{Valid size?}
+    Size -->|No| TooLong[Safety-route response]
+    Size -->|Yes| Cache{Cache hit?}
+    Cache -->|Yes| Cached[Cached response]
+    Cache -->|No| Memory[MemoryAgent]
     Memory --> Planner[LLMPlannerAgent]
     Planner --> Router[ToolRouterAgent]
-    Router -->|greeting| Greeting[greeting]
-    Router -->|direct/fallback| Summary[SummaryAgent]
-    Router -->|calculation/document_list| Tools[ToolExecutorAgent]
-    Router -->|document/rag| Search[SearchAgent]
+    Router -->|Greeting| Greeting[Greeting]
+    Router -->|Direct or fallback| Summary[SummaryAgent]
+    Router -->|Calculation or inventory| Tools[ToolExecutorAgent]
+    Router -->|Documents| Search[SearchAgent]
     Search --> Hybrid[HybridRetrieverAgent]
     Hybrid --> Rerank[RerankerAgent]
     Rerank --> Compress[ContextCompressionAgent]
-    Compress -->|RAG requis| RAG[RAGAgent]
-    Compress -->|retrieval sans RAG| Critic[LLMCriticAgent]
+    Compress -->|Generation required| RAG[RAGAgent]
+    Compress -->|Retrieval only| Critic[LLMCriticAgent]
     Tools --> Critic
     Greeting --> Critic
     Summary --> Critic
     RAG --> Citations[CitationValidatorAgent]
     Citations --> Critic
-    Critic -->|accepté| Safety[SafetyGuardAgent]
-    Critic -->|retry RAG possible| RetryRAG[prepare_rag_retry]
+    Critic -->|Accepted| Safety[SafetyGuardAgent]
+    Critic -->|Eligible RAG retry| RetryRAG[prepare_rag_retry]
     RetryRAG --> RAG
-    Critic -->|autre refus| Safety
+    Critic -->|Other rejection| Safety
     Safety --> Final[FinalAnswerAgent]
     Final --> End([ChatResponse])
 ```
 
-Le graphe contient 19 nœuds : 14 associés à une classe d'agent et 5 nœuds
-techniques (`greeting`, `skip_critic`, `skip_safety`, `prepare_rag_retry`,
-`prepare_summary_retry`). Voir
-[AGENTS.md](AGENTS.md) pour le détail.
+The historical graph had 19 nodes: 14 associated with agent classes and five technical nodes (`greeting`, `skip_critic`, `skip_safety`, `prepare_rag_retry`, `prepare_summary_retry`). See [AGENTS.md](AGENTS.md) for the current structure.
 
-### Nuances importantes du routage
+### Historical routing details
 
-- Les champs `requires_critic` et `requires_safety` du `PlannerDecision`
-  alimentent les quality gates. Le critic reste activé par défaut sur les routes
-  génératives/RAG, mais les routes déterministes peuvent passer par
-  `critic_skipped`.
-- Une route `document_qa` avec `requires_rag=False` fait tout de même search,
-  hybrid retrieval, reranking et compression, puis va directement au critic.
-- Le retry RAG fonctionne pour `route="rag"` avec documents présents.
-- Une réponse directe refusée peut maintenant passer une fois par
-  `prepare_summary_retry`; le second verdict va au safety pour borner la boucle.
-- Les routes `calculation` et `document_list` exécutent uniquement un outil
-  autorisé, puis passent par critic, safety et finalisation.
+- `PlannerDecision.requires_critic` and `requires_safety` controlled quality gates. Generative/RAG routes used the critic by default; deterministic routes could skip it.
+- `document_qa` with `requires_rag=False` still retrieved, fused, reranked and compressed, then went directly to the critic.
+- RAG retry required `route="rag"` and available documents.
+- A rejected direct answer could use `prepare_summary_retry` once; the second verdict proceeded to safety to bound execution.
+- Calculation and inventory executed only authorized tools, then passed through critic, safety and finalization.
 
-## 7. État partagé et observabilité du graphe
+## 7. Shared state and graph observability
 
-`GraphState` est la dataclass manipulée par les agents. `GraphStateDict` est le
-schéma `TypedDict` utilisé par LangGraph. Les conversions ont lieu à chaque
-frontière de nœud.
+Agents use the `GraphState` dataclass; LangGraph uses `GraphStateDict`. Conversion occurs at node boundaries.
 
-Les groupes de champs principaux sont :
+Field groups include identity (`conversation_id`, `transaction_id`, `user_message`), context (`history`, `conversation_context`), decisions (`intent`, `route`, `plan`, `tools`, `planner_decision`), tool results, retrieval results/context, generated drafts, critic/safety state and correction flags. Output/debug fields include `final_answer`, `agents_used`, `agent_results`, `retrieval_metrics`, `evaluation`, `metadata` and `error`.
 
-- identité : `conversation_id`, `transaction_id`, `user_message` ;
-- contexte : `history`, `conversation_context` ;
-- décision : `intent`, `route`, `plan`, `tools`, `planner_decision` ;
-- outils : `tool_results` ;
-- retrieval : `search_results`, `reranked_results`, `compressed_context` ;
-- génération : `search_output`, `summary_output`, `rag_output`, `draft_answer` ;
-- contrôle : critic, safety, `correction_attempted` ;
-- sortie/debug : `final_answer`, `agents_used`, `agent_results`,
-  `retrieval_metrics`, `evaluation`, `metadata`, `error`.
+Node wrappers measure `evaluation.latency_ms[NodeName]`. `record_result()` preserves raw results while deduplicating `agents_used`: repeated agent invocations appear once in the name list but retain separate result records.
 
-Chaque wrapper de nœud mesure sa latence dans
-`evaluation.latency_ms[NodeName]`. `record_result()` ajoute la sortie brute et
-évite les doublons dans `agents_used`, ce qui signifie qu'un agent réexécuté
-pendant un retry n'apparaît qu'une fois dans cette liste.
+### Deterministic tools
 
-### Outils déterministes
+`ToolExecutorAgent` accepts two registered routes: `calculation` uses an AST calculator without `eval` and bounds expression length, complexity, exponents and results; `document_list` scans at most 200 MongoDB records and groups them by source/file.
 
-`ToolExecutorAgent` n'accepte que deux routes préenregistrées :
+After RAG generation, `CitationValidatorTool` checks that numeric labels exist and refer to supplied documents. In this historical workflow, failure forced critic rejection and could trigger the one RAG retry. Structural citations do not prove that the cited sentence follows from its source.
 
-- `calculation` → `CalculatorTool`, parseur AST sans `eval`, avec limites de
-  taille, complexité, exposant et résultat ;
-- `document_list` → `DocumentListTool`, lecture MongoDB bornée à 200 enregistrements
-  et regroupement par fichier/source.
+## 8. Historical memory and cache
 
-Après une génération RAG, `CitationValidatorAgent` exécute un troisième outil :
-`CitationValidatorTool`. Il vérifie qu'au moins un label `[n]` est présent et que
-tous les numéros appartiennent aux documents fournis. Un échec force le critic à
-refuser le draft et peut déclencher l'unique retry RAG. Cette validation est
-structurelle : elle ne prouve pas que la phrase citée est réellement supportée.
-
-## 8. Mémoire et cache
-
-| Usage | Clé | Expiration |
+| Use | Key | Expiration |
 |---|---|---:|
-| Compte | `user:<email>` | aucune (`ttl=-1`) |
+| Account | `user:<email>` | None (`ttl=-1`) |
 | Conversation | `conversation:<owner_hash>:<id>:messages` | `REDIS_TTL_SECONDS` |
-| Réponse chat | `chat:<owner_hash>:<id>:docs:<version>:<message>` | `REDIS_TTL_SECONDS` |
+| Chat answer | `chat:<owner_hash>:<id>:docs:<version>:<message>` | `REDIS_TTL_SECONDS` |
 
-Le cache est un exact-match sur `strip().lower()`, mais il contient maintenant
-un hash de l'utilisateur et `documents:version`. Une ingestion ou un reset
-incrémente cette version et invalide les réponses dépendantes du corpus. Il ne
-versionne pas encore le prompt ou le modèle. Un cache hit ne réexécute aucun
-agent et n'ajoute pas la répétition du message à l'historique.
+The historical cache matched normalized messages (`strip().lower()`) and included an owner hash and `documents:version`. Ingestion/reset incremented the version. Prompts and models were not versioned. Cache hits ran no agents and did not append repeated messages. Later revisions removed this answer cache.
 
-Si Redis est indisponible au démarrage, un stockage Python local est utilisé. Si
-une opération échoue après une connexion initiale, l'opération concernée tombe
-également sur le store local, mais les données Redis existantes ne sont pas
-répliquées dans ce store. Ce mode est mono-process et non persistant.
+Redis failures fall back to local Python storage. Runtime failures after initial connection also use fallback, but existing Redis data is not replicated locally. Local storage is nonpersistent and not shared between workers.
 
-## 9. Ingestion et stockage documentaire
+## 9. Historical ingestion and storage
 
 ### Formats
 
-- PDF : une page non vide devient un document ; le texte est tronqué à 5 000
-  caractères ; le numéro de page et le nom du fichier sont conservés.
-- CSV : colonnes obligatoires `title`, `snippet`, `category`, colonne `source`
-  optionnelle ; une ligne devient un document.
+At the time of this guide, each nonempty PDF page became one record, truncated to 5,000 characters, with page number and file name. CSV required `title`, `snippet`, `category`, with optional `source`, and produced one record per row. The later audit replaced truncation with shared overlapping chunking.
 
-### Chemins d'ingestion
+### Ingestion paths
 
-- `sample-data` lit le catalogue CSV fourni.
-- `upload` accepte PDF/CSV, neutralise les chemins avec `Path(filename).name`,
-  conserve le fichier sous `backend/data/` et ajoute un suffixe UUID si le nom
-  existe déjà.
-- `batch` lit un chemin du serveur sous `BATCH_INGEST_ROOT`, non récursif par
-  défaut, accepte un filtre de types et peut exiger un admin via
-  `BATCH_INGEST_REQUIRES_ADMIN`.
+- `sample-data` reads the bundled CSV catalog.
+- `upload` accepts PDF/CSV, normalizes names through `Path(filename).name`, stores under `backend/data/` and adds a UUID suffix on collision.
+- `batch` reads a directory under `BATCH_INGEST_ROOT`, nonrecursive by default, with extension filters and optional administrator requirements.
 
-Avant insertion, le service tente un embedding batch de `title + snippet`. Un
-échec n'annule pas l'ingestion : les documents restent disponibles en full-text.
-L'insertion utilise des IDs stables, déduplique les fragments en mémoire, puis
-fait un `bulk_write(..., upsert=True)`. Les documents portent `owner_id` et
-`visibility`; `DOCUMENT_SCOPE_MODE=owner` filtre les recherches par utilisateur
-tout en laissant visibles les documents `shared`. Les limites `MAX_UPLOAD_BYTES`,
-`MAX_BATCH_FILES`, `MAX_INGEST_DOCUMENTS` et `MAX_INGESTED_SNIPPET_CHARS`
-bornent les entrées.
+Before insertion, the service attempts batch embeddings of title and snippet. Failure retains text-searchable documents. Stable IDs, in-memory deduplication and upserts limit duplicates. Records carry `owner_id` and `visibility`; owner mode includes the user's records plus shared records. Upload size, batch file count, fragment count and snippet size are bounded by configuration.
 
-Le reset préserve les comptes `user:*` et les index Atlas. En mode `owner`, un
-non-admin supprime seulement ses documents et son runtime ; un admin configuré
-dans `ADMIN_EMAILS` peut effectuer un reset global.
+Reset preserves `user:*` accounts and Atlas indexes. In owner mode, non-admin users clear only their own documents/runtime; configured administrators can perform global reset.
 
-## 10. Frontend actuel
+## 10. Historical frontend
 
-Le frontend est un composant client unique dans `frontend/app/page.tsx`.
+The frontend is a client component in `frontend/app/page.tsx`.
 
 ### Session
 
-- JWT et email sont stockés dans `localStorage`.
-- Au chargement, un JWT sauvegardé est validé par `GET /api/v1/auth/me` avant
-  d'afficher le workspace.
-- Le mode register appelle d'abord `/register`, puis `/login` automatiquement.
-- Une réponse `401` sur les actions principales déclenche le logout local.
+JWT and email are stored in `localStorage`. A saved token is checked through `/auth/me` before the workspace opens. Registration is followed by automatic login. Main-action `401` responses trigger local logout.
 
 ### Workspace
 
-- Chat avec envoi par bouton ou `Cmd/Ctrl+Enter`.
-- Historique local envoyé avec chaque requête ; le message d'accueil initial en
-  fait partie tant qu'il est présent dans `messages`.
-- Upload drag-and-drop PDF/CSV et indexation.
-- Bouton `INGESTION DATA` : appelle actuellement `/api/v1/ingest/batch` sans
-  body, donc indexe le dossier backend `data` par défaut. Il n'appelle pas
-  `/ingest/sample-data` malgré le nom historique de la fonction TypeScript.
-- Reset des documents, conversations et cache après confirmation.
-- Health check initial, manuel et après ingestion/upload/reset ; pas de polling
-  périodique.
-- Thèmes clair/sombre mémorisés, mise en page desktop/tablette/mobile et panneaux
-  redimensionnables sur desktop.
+Chat supports a send button and Cmd/Ctrl+Enter. Local history accompanies requests, including the initial welcome message while present. Upload supports PDF/CSV drag-and-drop. The historical `INGESTION DATA` button calls `/ingest/batch` without a body to process backend `data`; despite the TypeScript function's old name, it does not call `/ingest/sample-data`.
 
-### Cockpit
+Reset requires confirmation. Health checks occur initially, manually and after ingestion/upload/reset, without periodic polling. Light/dark themes persist; layouts adapt to desktop/tablet/mobile and desktop panels are resizable.
 
-Il affiche la route, les agents, les outils exécutés, le cache, le plan, le critic, le safety, les
-métriques retrieval, le trace id et chaque `agent_result`. Les événements de la
-colonne activity sont des événements frontend, pas un flux des logs Loguru.
+### Diagnostics
 
-En cas d'échec réseau, Safari peut fournir le texte brut `Load failed`, qui est
-actuellement affiché comme message assistant. Cette erreur signifie typiquement
-que le backend n'écoute pas sur l'URL configurée, que le port est incorrect ou
-que CORS bloque la requête ; elle ne prouve pas une panne du RAG.
+The workspace shows route, agents, tools, historical cache status, plan, critic, safety, retrieval metrics, trace ID and raw agent results. The activity column contains frontend events, not streamed Loguru logs.
 
-## 11. Authentification et sécurité
+Safari may report a raw `Load failed` network error. This usually indicates backend connectivity, port or CORS problems and does not itself prove a RAG failure.
 
-- Mot de passe : PBKDF2-SHA256 via Passlib.
-- JWT : algorithme et durée configurables ; 120 minutes par défaut.
-- Hors `development`, `local` et `test`, le backend refuse la clé JWT par défaut.
-- CORS : origines explicites et regex LAN privée uniquement en dev/local.
-- Rate limit : `RATE_LIMIT_REQUESTS_PER_MINUTE` par minute/IP ; Redis est
-  utilisé quand disponible, sinon le middleware retombe sur le compteur mémoire
-  local ; `/health` est exempté.
-- Headers : frame denial, nosniff, CSP, referrer et permissions policy.
-- Safety de sortie : regex pour secrets/tokens évidents ; revue LLM disponible
-  dans le code mais désactivée dans le workflow.
-- Les prompts récents séparent question, documents et historique, traitent les
-  documents comme données non fiables et exigent le grounding/citations.
+## 11. Authentication and security
 
-Limites : pas de révocation JWT, pas de rôles fins, autorisation documentaire
-basée sur l'email plutôt que sur un tenant dédié, protection prompt injection non
-exhaustive, secrets potentiellement présents dans les sorties debug/logs, et
-parsing ingestion encore exécuté dans le worker API.
+Passwords use PBKDF2-SHA256. JWT algorithm and expiry are configurable, with a 120-minute default. Outside development/local/test, the backend rejects the default authentication secret. CORS uses explicit origins plus a private-LAN regex only in development/local mode.
 
-## 12. Configuration essentielle
+Per-IP rate limiting uses Redis when available, otherwise local counters; `/health` is exempt. Security headers include frame denial, nosniff, CSP, referrer and permissions policies. Output safety masks recognizable secrets; optional LLM safety review exists but is disabled in the workflow. Prompts separate question, evidence and history, mark source content untrusted and require grounding/citations.
 
-| Variable | Défaut code | Remarque |
+Limitations include no JWT revocation, no fine-grained roles, email-based document ownership rather than dedicated tenancy, incomplete prompt-injection protection, possible secrets in diagnostic outputs/logs, and ingestion parsing within API workers.
+
+## 12. Configuration at the historical revision
+
+| Variable | Historical default | Note |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | seul Hugging Face est implémenté |
-| `HUGGINGFACE_API_KEY` | vide | requise pour LLM et embeddings |
-| `MODEL_*` | selon capacité | surcharge des modèles |
-| `MODEL_EMBEDDING` | `BAAI/bge-small-en-v1.5` | dimension attendue 384 |
-| `SEMANTIC_RERANKER_ENABLED` | `true` | désactive seulement le reranking sémantique |
-| `REDIS_URL` | `redis://localhost:6379/0` | fallback local si échec initial |
-| `REDIS_TTL_SECONDS` | `3600` | conversations et cache |
-| `MONGODB_URI` | vide | recherche/ingestion indisponibles si vide |
-| `MONGODB_SEARCH_INDEX` | `documents_search` | doit exister dans Atlas |
-| `MONGODB_VECTOR_INDEX` | `documents_vector` | champ `embedding` |
-| `DOCUMENT_SCOPE_MODE` | `shared` local / `owner` hors local | filtre documentaire par utilisateur |
-| `DOCUMENT_DEFAULT_VISIBILITY` | `shared` local / `private` hors local | visibilité des fragments ingérés |
-| `MAX_UPLOAD_BYTES` | `10485760` | taille maximale d'un fichier uploadé |
-| `MAX_BATCH_FILES` | `20` | limite d'un import batch |
-| `MAX_INGEST_DOCUMENTS` | `500` | limite de fragments par requête |
-| `MAX_USER_MESSAGE_CHARS` | `8000` | contrôle dans `ChatWorkflow` |
-| `MAX_RAG_CONTEXT_CHARS` | `4000` | compression locale |
-| `MAX_RAG_DOCUMENTS` | `5` | nombre gardé après reranking |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | rate limit HTTP |
-| `CITATION_SUPPORT_REQUIRED` | `false` | support lexical bloquant ou informatif |
-| `LLM_TIMEOUT_SECONDS` | `60` | timeout client LLM |
-| `LANGFUSE_ENABLED` | `false` | `.env.example` le met à `true` |
-| `LANGGRAPH_CHECKPOINT_ENABLED` | `false` | `MemorySaver` seulement |
-| `AUTH_TOKEN_EXPIRY_MINUTES` | `120` | durée du JWT |
+| `LLM_PROVIDER` | `ollama` | Only Hugging Face was implemented at that revision |
+| `HUGGINGFACE_API_KEY` | Empty | Needed for generation and embeddings |
+| `MODEL_*` | Capability-dependent | Model overrides |
+| `MODEL_EMBEDDING` | `BAAI/bge-small-en-v1.5` | Expected dimension 384 |
+| `SEMANTIC_RERANKER_ENABLED` | `true` | Controls semantic reranking only |
+| `REDIS_URL` | `redis://localhost:6379/0` | Local fallback after connection failure |
+| `REDIS_TTL_SECONDS` | `3600` | Conversation and historical cache expiry |
+| `MONGODB_URI` | Empty | Retrieval/ingestion unavailable when unset |
+| `MONGODB_SEARCH_INDEX` | `documents_search` | Must exist in Atlas |
+| `MONGODB_VECTOR_INDEX` | `documents_vector` | Indexes `embedding` |
+| `DOCUMENT_SCOPE_MODE` | Local shared / otherwise owner | Per-user document scope |
+| `DOCUMENT_DEFAULT_VISIBILITY` | Local shared / otherwise private | Ingested fragment visibility |
+| `MAX_UPLOAD_BYTES` | `10485760` | Upload size limit |
+| `MAX_BATCH_FILES` | `20` | Batch file limit |
+| `MAX_INGEST_DOCUMENTS` | `500` | Fragment limit per request |
+| `MAX_USER_MESSAGE_CHARS` | `8000` | Workflow input limit |
+| `MAX_RAG_CONTEXT_CHARS` | `4000` | Local context compression |
+| `MAX_RAG_DOCUMENTS` | `5` | Post-reranking document count |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | HTTP rate limit |
+| `CITATION_SUPPORT_REQUIRED` | `false` | Informative or blocking lexical support |
+| `LLM_TIMEOUT_SECONDS` | `60` | Generation client timeout |
+| `LANGFUSE_ENABLED` | `false` | Example environment enabled it |
+| `LANGGRAPH_CHECKPOINT_ENABLED` | `false` | Historical MemorySaver option |
+| `AUTH_TOKEN_EXPIRY_MINUTES` | `120` | JWT lifetime |
 
-`EMBEDDING_DIMENSIONS` est chargé mais n'est pas utilisé pour valider la taille
-des vecteurs dans le code applicatif ; l'index Atlas doit rester cohérent.
+At that revision, `EMBEDDING_DIMENSIONS` was loaded but not used for application-level vector validation. The later audit added validation. Current settings and examples supersede this table.
 
-## 13. Démarrage et diagnostic
+## 13. Startup and diagnostics
 
-```bash
+Copy environment examples only when destination files do not already exist:
+
+```sh
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
 make install
 make dev
 ```
 
-Services attendus : frontend `http://localhost:3000`, backend
-`http://localhost:8000`, OpenAPI `http://localhost:8000/docs`.
+Expected addresses: frontend `http://localhost:3000`, backend `http://localhost:8000`, OpenAPI `http://localhost:8000/docs`.
 
-```bash
+```sh
 curl http://127.0.0.1:8000/health
 lsof -nP -iTCP:8000 -sTCP:LISTEN
 lsof -nP -iTCP:3000 -sTCP:LISTEN
 ```
 
-`clear` efface seulement l'affichage du terminal. Il ne libère aucun port. Si
-`make dev` affiche `Address already in use`, arrêter le processus identifié sur
-le port concerné ou choisir un autre port et aligner `NEXT_PUBLIC_BACKEND_URL`.
+`clear` only clears terminal display; it does not release ports. For `Address already in use`, identify the process using the port, stop it if appropriate or select another port and align `NEXT_PUBLIC_BACKEND_URL`.
 
-## 14. Observabilité et tests
+## 14. Observability and tests
 
-Loguru écrit sur console et, par défaut, dans
-`backend/logs/multi-agent-backend.log`, avec rotation. Le middleware HTTP crée un
-`X-Request-ID`. Le workflow ajoute un contexte session/transaction/agent/route et
-mesure la latence des nœuds.
+Loguru writes to console and, by default, rotating `backend/logs/multi-agent-backend.log`. HTTP middleware creates `X-Request-ID`; workflow context adds session/transaction/agent/route and node latency.
 
-Commandes validées le 30 août 2026 :
+Checks recorded on August 30, 2026:
 
-```bash
-make test                       # 32 tests backend : OK
-cd frontend && npm run build    # build Next.js + types : OK
+```sh
+make test                       # 32 backend tests passed at that revision
+cd frontend && npm run build    # Next.js build and type checks passed
 ```
 
-Voir [EVALUATION.md](EVALUATION.md) pour le détail et le benchmark retrieval.
+See [EVALUATION.md](EVALUATION.md) for current evaluation guidance and retrieval benchmarks.
 
-## 15. Limites prioritaires
+## 15. Priorities recorded at that revision
 
-1. Ajouter rôles/tenants explicites et migrer les documents legacy vers ce
-   modèle.
-2. Rendre le health check LLM réel ou renommer la pastille modèle.
-3. Sortir l'ingestion PDF/CSV lourde du worker API vers une file/job.
-4. Ajouter une UI admin pour batch/reset au lieu de simples endpoints.
-5. Normaliser ou fusionner les scores dense/sparse avec une méthode calibrée.
-6. Ajouter tests frontend, tests d'intégration API, tests de charge et évaluation
-   de groundedness/hallucination.
-7. Brancher réellement Ollama ou retirer sa valeur de configuration.
+1. Add explicit roles/tenants and migrate legacy document ownership.
+2. Test actual LLM readiness or clarify the model status indicator.
+3. Move expensive PDF/CSV ingestion to a job queue.
+4. Add an administrator UI for batch/reset operations.
+5. Calibrate or fuse dense/sparse scores.
+6. Add frontend/API/load tests and groundedness/hallucination evaluation.
+7. Implement Ollama or remove its configuration option.
 
-Le détail des limites propres au retrieval se trouve dans
-[RAG_SYSTEM.md](RAG_SYSTEM.md).
+Some of these items were addressed in later revisions. See [RAG_SYSTEM.md](RAG_SYSTEM.md) for current retrieval behavior and limitations.

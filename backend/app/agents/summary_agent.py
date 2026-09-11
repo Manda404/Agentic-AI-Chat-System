@@ -1,13 +1,4 @@
-"""
-Agent de résumé/réponse directe : génère une réponse LLM sans passer par
-la recherche documentaire.
-
-Malgré son nom "summary", cet agent ne fait pas un résumé au sens strict :
-le prompt utilisé (`LLMPrompts.summarization`) demande au LLM de répondre
-directement à la question de l'utilisateur, en tenant compte du contexte
-de conversation. Dans le workflow actuel, il sert surtout aux réponses directes,
-aux demandes de résumé, aux demandes de correction et aux fallbacks non RAG.
-"""
+"""Direct-answer and text-summary component without document retrieval. Despite its historical name, SummaryAgent also handles general answers and transformations of supplied text, using conversation context."""
 
 from app.config.settings import settings
 from app.logger import logger
@@ -15,7 +6,7 @@ from app.models.chat_models import AgentResult
 from app.services.llm_service import LLMService
 from app.state import GraphState
 
-# Le décorateur Langfuse reste optionnel : en local, observe devient un no-op.
+# Langfuse is optional: observe becomes a no-op when disabled.
 if settings.langfuse_enabled:
     try:
         from langfuse import observe
@@ -32,30 +23,27 @@ else:
 
 
 class SummaryAgent:
-    """Génère une réponse LLM directe à partir du message et du contexte de conversation."""
+    """Generate a direct LLM answer from the message and conversation context."""
 
     def __init__(self, llm_service: LLMService):
-        """Injecte le service LLM utilisé pour produire la réponse directe."""
+        """Inject the LLM service used for direct answers."""
         self.llm_service = llm_service
 
     @observe(name="summary_agent")
     async def run(self, state: GraphState) -> AgentResult:
-        """
-        Appelle `LLMService.summarize` et remplit `summary_output` / `draft_answer`.
-
-        `draft_answer` est important : il donne au critic et au safety guard une
-        réponse candidate à analyser, même quand le workflow ne passe pas par RAG.
-        """
+        """Call LLMService.summarize and populate summary_output and draft_answer for subsequent validation and safety checks."""
         logger.bind(
             route=state.route,
             message_preview=state.user_message[:120],
             context_messages=len(state.conversation_context),
         ).info("Summary agent started.")
-        # Réponse directe : pas de recherche documentaire, seulement le message + contexte court.
+        # Direct answer: use the message and short history without document retrieval.
         context = "\n".join(
             f"{message.get('role', 'unknown')}: {message.get('content', '')}"
             for message in state.conversation_context
         )
+        if state.correction_attempted and state.critic_feedback:
+            context += "\nPrevious draft: " + (state.draft_answer or "") + "\nQuality feedback: " + state.critic_feedback
         summary = await self.llm_service.summarize(state.user_message, context)
         state.summary_output = summary
         state.draft_answer = summary

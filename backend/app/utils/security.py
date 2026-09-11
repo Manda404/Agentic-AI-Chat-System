@@ -1,9 +1,4 @@
-"""
-Hachage et vérification des mots de passe (pbkdf2_sha256 via passlib).
-
-Volontairement sans logging : ces fonctions manipulent des mots de
-passe/hashes, qui ne doivent jamais apparaître dans les logs.
-"""
+"""Password hashing and verification with Passlib pbkdf2_sha256. No logging: these functions handle plaintext passwords."""
 
 from passlib.context import CryptContext
 
@@ -11,12 +6,12 @@ password_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    """Retourne le hash pbkdf2_sha256 (avec sel) d'un mot de passe en clair."""
+    """Return a salted pbkdf2_sha256 hash of a plaintext password."""
     return password_context.hash(password)
 
 
 def verify_password(password: str, hashed_password: str) -> bool:
-    """Vérifie qu'un mot de passe en clair correspond à un hash stocké."""
+    """Check a plaintext password against its stored hash."""
     return password_context.verify(password, hashed_password)
 
 

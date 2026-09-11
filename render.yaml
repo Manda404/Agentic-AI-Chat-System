@@ -18,6 +18,10 @@ services:
         sync: false
       - key: HUGGINGFACE_API_KEY
         sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DOCUMENTARY_AGENT_TIMEOUT_SECONDS
+        value: "90"
       - key: MODEL_SUMMARIZATION
         value: deepseek-ai/DeepSeek-V4-Pro
       - key: MODEL_CODE_GENERATION
@@ -47,7 +51,7 @@ services:
       - key: REDIS_TTL_SECONDS
         value: "3600"
       - key: ADMIN_EMAILS
-        value: rostand@yahoo.fr
+        value: rostandsurel@yahoo.fr
       - key: RESET_REQUIRES_ADMIN
         value: "true"
       - key: BATCH_INGEST_REQUIRES_ADMIN
@@ -58,6 +62,10 @@ services:
         value: HS256
       - key: AUTH_TOKEN_EXPIRY_MINUTES
         value: "120"
+      - key: CORRECTIVE_RAG_ENABLED
+        value: "true"
+      - key: CORRECTIVE_RAG_MIN_RELEVANCE
+        value: "0.2"
       - key: LANGFUSE_ENABLED
         value: "false"
       - key: LOG_LEVEL

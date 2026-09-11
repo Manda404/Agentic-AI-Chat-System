@@ -1,22 +1,4 @@
-"""
-Jeu de référence (ground truth) pour mesurer la qualité du retrieval.
-
-Chaque cas associe une question à l'ensemble des titres de documents
-considérés comme pertinents. Ces titres correspondent au CSV d'exemple
-du projet (`backend/data/ai_tooling_catalog.csv`, 10 documents) : le
-benchmark est donc utilisable immédiatement après un
-`POST /ingest/sample-data`, sans jeu de données à préparer.
-
-Deux cas (`search_methods_comparison`, `parallel_vs_supervisor`) ont
-volontairement plusieurs documents pertinents ou un document "piège"
-proche en sens mais non pertinent (ex: Ollama local vs HuggingFace
-hébergé) : un retrieval qui ne fait que remonter "un document quelconque
-du bon sujet" échouera sur ces cas-là, alors qu'il pourrait sembler bon
-sur les cas à un seul document évident.
-
-Pour évaluer sur TES documents plutôt que le jeu d'exemple, ajoute tes
-propres `RetrievalGoldCase` ici après avoir ingéré tes fichiers.
-"""
+"""Retrieval ground truth matching the bundled ten-document ai_tooling_catalog.csv dataset. Run after POST /ingest/sample-data. search_methods_comparison and parallel_vs_supervisor include multiple relevant documents or semantically close distractors, so merely finding a related topic is insufficient. Add RetrievalGoldCase entries with annotated relevance to evaluate your own ingested documents."""
 
 from dataclasses import dataclass
 
