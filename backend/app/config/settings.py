@@ -39,7 +39,7 @@ class Settings(BaseModel):
     tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
 
     huggingface_api_key: str = os.getenv("HUGGINGFACE_API_KEY", "")
-    huggingface_model: str = os.getenv("HUGGINGFACE_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+    huggingface_model: str = os.getenv("HUGGINGFACE_MODEL", "Qwen/Qwen3-4B-Instruct-2507")
     
     model_summarization: str = os.getenv("MODEL_SUMMARIZATION", "")
     model_code_generation: str = os.getenv("MODEL_CODE_GENERATION", "")
