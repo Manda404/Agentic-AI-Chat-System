@@ -27,7 +27,7 @@ services:
       - key: MODEL_CODE_GENERATION
         value: Qwen/Qwen2.5-Coder-7B-Instruct
       - key: MODEL_QUESTION_ANSWERING
-        value: Qwen/Qwen2.5-7B-Instruct
+        value: Qwen/Qwen3-4B-Instruct-2507
       - key: MODEL_REASONING
         value: deepseek-ai/DeepSeek-V4-Pro
       - key: MODEL_EMBEDDING
