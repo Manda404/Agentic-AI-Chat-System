@@ -24,6 +24,10 @@ class FinalAnswerAgent:
                 state.final_answer = 'The model did not produce a valid action. Please try again.'
             elif reason == 'llm_unavailable':
                 state.final_answer = 'The generation service is unavailable. Please try again later.'
+            elif reason == 'llm_payment_required':
+                state.final_answer = 'The model provider requires credits or a billing update before it can answer. Update the provider account or configure another model provider.'
+            elif reason == 'llm_credits_exhausted':
+                state.final_answer = 'The model provider reports that your monthly credits are exhausted. Add credits to the provider account or configure another provider to resume answers. Your indexed documents are still available.'
             elif reason == 'agent_stage_failed':
                 state.final_answer = 'An internal error interrupted the research. Please try again.'
             elif state.route in {'calculation', 'document_list'}:

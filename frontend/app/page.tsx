@@ -91,6 +91,9 @@ type HealthResponse = {
   app: string;
   environment: string;
   llm_provider: string;
+  llm_status?: "online" | "offline" | "unverified" | "checking";
+  llm_checked_at?: string | null;
+  llm_failure_reason?: string | null;
   redis_connected: boolean;
   mongodb_connected: boolean;
 };
@@ -308,6 +311,12 @@ export default function Home() {
   useEffect(() => {
     void fetchHealth("Initial health probe");
   }, []);
+
+  useEffect(() => {
+    if (health?.llm_status !== "checking" && health?.llm_status !== "unverified") return;
+    const timer = window.setTimeout(() => void fetchHealth("Model startup check"), 2000);
+    return () => window.clearTimeout(timer);
+  }, [health]);
 
   const historyPayload = useMemo(
     () =>
@@ -829,6 +838,7 @@ export default function Home() {
       const data: ChatResponse = await response.json();
       setConversationId(data.conversation_id);
       setLastResponse(data);
+      void fetchHealth("Post-chat model status");
       setMessages((current: Message[]) => [
         ...current,
         { role: "assistant", content: data.answer },
@@ -874,8 +884,17 @@ export default function Home() {
 
   const redisTone: StatusTone = health?.redis_connected ? "online" : "offline";
   const mongoTone: StatusTone = health?.mongodb_connected ? "online" : "offline";
-  // The health endpoint does not probe model access or provider quota.
-  const modelTone: StatusTone = "neutral";
+  // Availability reflects the last provider call; health checks do not call the model.
+  const modelTone: StatusTone = healthError ? "offline"
+    : health?.llm_status === "online" ? "online"
+    : health?.llm_status === "offline" ? "offline" : "neutral";
+  const modelCreditsExhausted = health?.llm_failure_reason === "llm_credits_exhausted";
+  const modelBillingRequired = modelCreditsExhausted || health?.llm_failure_reason === "llm_payment_required";
+  const modelStatusText = modelBillingRequired ? (modelCreditsExhausted ? "credits exhausted" : "billing required")
+    : modelTone === "neutral" ? (health?.llm_status === "checking" || health?.llm_status === "unverified" ? "checking…" : "unknown") : undefined;
+  const modelNotice = modelBillingRequired
+    ? `${health?.llm_provider === "huggingface" ? "Hugging Face" : "The model provider"} ${modelCreditsExhausted ? "reports that your monthly credits are exhausted" : "requires credits or a billing update"}. Add credits to the provider account or configure another provider to resume answers. Your indexed documents are still available.`
+    : null;
 
   const authFrameStyle: CSSProperties = {
     ...styles.authFrame,
@@ -1051,7 +1070,8 @@ export default function Home() {
                   <StatusDot label="backend" tone={backendTone} />
                   <StatusDot label="redis" tone={redisTone} />
                   <StatusDot label="mongodb" tone={mongoTone} />
-                  <StatusDot label="model" tone={modelTone} statusText="unverified" />
+                  <StatusDot label="model" tone={modelTone} statusText={modelStatusText} />
+                  {modelNotice && <p role="alert" style={{ fontSize: 12, lineHeight: 1.6, margin: "8px 0 0" }}>{modelNotice}</p>}
                 </div>
 
                 <div style={quickInfoGridStyle}>
@@ -1223,7 +1243,8 @@ export default function Home() {
                 <StatusDot label="backend" tone={backendTone} />
                 <StatusDot label="redis" tone={redisTone} />
                 <StatusDot label="mongodb" tone={mongoTone} />
-                <StatusDot label="model" tone={modelTone} statusText="unverified" />
+                <StatusDot label="model" tone={modelTone} statusText={modelStatusText} />
+                {modelNotice && <p role="alert" style={{ fontSize: 12, lineHeight: 1.6, margin: "8px 0 0" }}>{modelNotice}</p>}
               </div>
 
               <div style={styles.cornerInfo}>

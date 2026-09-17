@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.config.settings import settings
 from app.logger import logger
 from app.models.chat_models import AgentResult
-from app.services.llm_service import ModelCapability
+from app.services.llm_service import ModelCapability, generation_failure_reason
 from app.state import GraphState
 
 
@@ -225,14 +225,16 @@ class DocumentaryTeam:
             state.metadata['answer_failure'] = 'agent_timeout'
             self._event(state, 'Orchestrator', 'User', 'Time limit reached: abstaining.')
         except Exception as exc:
-            reason = 'llm_unavailable' if isinstance(exc, APIError) else 'agent_stage_failed'
+            reason = generation_failure_reason(exc) if isinstance(exc, APIError) else 'agent_stage_failed'
             state.metadata['answer_failure'] = reason
             stage = state.metadata.get('_team_stage', 'unknown')
             # Do not expose provider bodies or validation inputs (which can contain documents).
             details = {'stage': stage, 'error_type': type(exc).__name__}
             state.evaluation['agent_error'] = details
             logger.bind(**details).warning('Documentary team stopped: {}', reason)
-            message = ('The generation service is unavailable.' if reason == 'llm_unavailable'
+            message = ('The model provider reports that monthly credits are exhausted.' if reason == 'llm_credits_exhausted'
+                       else 'The model provider requires credits or a billing update.' if reason == 'llm_payment_required'
+                       else 'The generation service is unavailable.' if reason == 'llm_unavailable'
                        else 'An agent failed or returned an invalid decision.')
             self._event(state, 'Orchestrator', 'User', message, **details)
         finally:

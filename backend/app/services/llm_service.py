@@ -1,6 +1,8 @@
 """LLM access through Hugging Face Router or the optional Ollama-compatible interface. Choose the configured model with optional MODEL_* capability overrides. AsyncOpenAI avoids blocking the event loop during provider requests. Optional Langfuse decorators trace calls when enabled and otherwise leave execution unchanged."""
 
 import json
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from enum import Enum
 from openai import AsyncOpenAI
@@ -33,6 +35,15 @@ class ModelCapability(Enum):
     
     
 TModel = TypeVar("TModel", bound=BaseModel)
+
+def generation_failure_reason(exc: Exception) -> str:
+    """Classify billing failures without exposing provider response bodies."""
+    from openai import APIStatusError
+    if isinstance(exc, APIStatusError) and exc.status_code == 402:
+        if 'depleted your monthly included credits' in str(exc.body).lower():
+            return 'llm_credits_exhausted'
+        return 'llm_payment_required'
+    return 'llm_unavailable'
     
 class LLMService:
     """
@@ -42,6 +53,9 @@ class LLMService:
     
     def __init__(self):
         self.client = None
+        self.last_call_status = 'unverified'
+        self.last_call_at = None
+        self.last_call_reason = None
         self.langfuse_enabled = settings.langfuse_enabled
         self._initialize_client()
         
@@ -64,6 +78,18 @@ class LLMService:
             )
         else:
             logger.warning("HUGGINGFACE_API_KEY is not configured.")
+
+    async def check_availability(self):
+        """One bounded startup probe, without user data or document content."""
+        self.last_call_status = 'checking'
+        try:
+            async with asyncio.timeout(10):
+                await self.generate(prompt='Reply OK.', max_tokens=1, temperature=0.0,
+                                    capability=ModelCapability.QUESTION_ANSWERING)
+        except Exception as exc:
+            self.last_call_status = 'offline'
+            self.last_call_reason = generation_failure_reason(exc)
+            self.last_call_at = datetime.now(timezone.utc).isoformat()
 
     def get_model_for_capability(self, capability: ModelCapability) -> str:
         """Use the explicit Hugging Face capability override or HUGGINGFACE_MODEL. The optional Ollama backend uses OLLAMA_MODEL."""
@@ -97,6 +123,9 @@ class LLMService:
         """Send a formatted prompt and return generated text, or an empty string for empty content. An explicit model overrides capability-based selection; max_tokens and temperature control generation. Higher-level operations build prompts then delegate here."""
 
         if not self.client:
+            self.last_call_status = 'offline'
+            self.last_call_reason = 'llm_unavailable'
+            self.last_call_at = datetime.now(timezone.utc).isoformat()
             raise RuntimeError("LLM client unavailable. Check LLM_PROVIDER and its configuration.")
 
         if not model and capability:
@@ -122,10 +151,16 @@ class LLMService:
           )
           
           response = completion.choices[0].message.content or ""
+          self.last_call_status = 'online'
+          self.last_call_reason = None
+          self.last_call_at = datetime.now(timezone.utc).isoformat()
           logger.info(f"Generated {len(response)} characters")
             
           return response
         except Exception as e:
+            self.last_call_status = 'offline'
+            self.last_call_reason = generation_failure_reason(e)
+            self.last_call_at = datetime.now(timezone.utc).isoformat()
             logger.error(f"Error generating with HuggingFace Router: {e}")
             raise
         
